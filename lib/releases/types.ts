@@ -7,6 +7,7 @@ export interface Release {
   startDate: string | null;
   released: boolean;
   archived: boolean;
+  deletedAt: string | null;
   jiraRaw: unknown;
   receivedAt: string;
   updatedAt: string;

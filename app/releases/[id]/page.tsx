@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Loader2,
@@ -15,6 +15,7 @@ import {
   ExternalLink,
   AlertTriangle,
   ArrowRight,
+  Trash2,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
@@ -189,6 +190,7 @@ function groupByPhase(instances: ReleaseTaskInstance[]): PhaseGroup[] {
 
 export default function ReleasePage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const [release, setRelease] = useState<Release | null>(null);
   const [matchedTemplate, setMatchedTemplate] = useState<ReleaseTemplate | null>(null);
   const [templateTaskCount, setTemplateTaskCount] = useState(0);
@@ -199,6 +201,7 @@ export default function ReleasePage() {
   const [dispatchingId, setDispatchingId] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -275,6 +278,41 @@ export default function ReleasePage() {
     }
   };
 
+  const handlePurge = async () => {
+    if (!release) return;
+    const withExternal = instances.filter((i) => !!i.externalId).length;
+    const googleLine = withExternal
+      ? `\n\nThe app will attempt to delete ${withExternal} associated Google Task / Calendar item(s).`
+      : "";
+    if (
+      !confirm(
+        `Purge "${release.name}"? This deletes the release and its task history from this app.${googleLine}`,
+      )
+    ) {
+      return;
+    }
+    setPurging(true);
+    try {
+      const res = await fetch(`/api/releases/${id}/purge`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "Purge failed");
+        return;
+      }
+      if (data.errors && data.errors.length > 0) {
+        const lines = data.errors
+          .map((e: { label: string; error: string }) => `• ${e.label}: ${e.error}`)
+          .join("\n");
+        alert(
+          `Release purged. Some Google cleanup failed — delete these by hand:\n\n${lines}`,
+        );
+      }
+      router.push("/releases");
+    } finally {
+      setPurging(false);
+    }
+  };
+
   const handleRegenerate = async () => {
     setRegenerating(true);
     try {
@@ -321,26 +359,62 @@ export default function ReleasePage() {
     );
   }
 
-  const actions = matchedTemplate ? (
-    <div className="ml-auto">
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-7 text-xs gap-1.5 text-muted-foreground"
-        onClick={() => setRegenOpen(true)}
-        disabled={regenerating}
-      >
-        <RefreshCw className="h-3.5 w-3.5" />
-        Regenerate
-      </Button>
+  const actions = (
+    <div className="ml-auto flex items-center gap-1">
+      {matchedTemplate && !release.deletedAt && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 text-xs gap-1.5 text-muted-foreground"
+          onClick={() => setRegenOpen(true)}
+          disabled={regenerating}
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          Regenerate
+        </Button>
+      )}
+      {release.deletedAt && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 text-xs gap-1.5 text-red-700 dark:text-red-400 hover:bg-red-500/10"
+          onClick={handlePurge}
+          disabled={purging}
+        >
+          {purging ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+          Purge
+        </Button>
+      )}
     </div>
-  ) : undefined;
+  );
 
   const pct = counts.total ? Math.round((counts.done / counts.total) * 100) : 0;
 
   return (
     <AppShell title={<span className="font-mono">{release.name}</span>} actions={actions}>
       <main className="max-w-5xl mx-auto px-6 py-6 space-y-6">
+        {release.deletedAt && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 flex items-start gap-2 text-sm">
+            <Trash2 className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5 shrink-0" />
+            <div className="space-y-0.5">
+              <p className="font-medium text-red-700 dark:text-red-400">
+                Deleted in Jira
+              </p>
+              <p className="text-xs text-muted-foreground">
+                This release was deleted in Jira on{" "}
+                {release.deletedAt.slice(0, 10)}. Task history is kept until you
+                click <span className="font-medium">Purge</span>, which removes
+                the release from this app and attempts to delete any associated
+                Google Tasks / Calendar events.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Header: meta + progress summary */}
         <section className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-start">
           <div className="space-y-2 min-w-0">

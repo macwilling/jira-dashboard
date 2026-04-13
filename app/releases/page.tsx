@@ -11,6 +11,7 @@ import {
   Archive,
   CheckCircle2,
   AlertCircle,
+  Trash2,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { cn } from "@/lib/utils";
@@ -22,7 +23,7 @@ interface ReleaseWithMeta extends Release {
   taskProgress: { total: number; done: number };
 }
 
-type ScopeFilter = "all" | "upcoming" | "released" | "archived";
+type ScopeFilter = "all" | "upcoming" | "released" | "archived" | "deleted";
 type TemplateFilter = "all" | "has" | "none";
 
 type SortKey = "date" | "name" | "progress" | "status";
@@ -33,6 +34,7 @@ const SCOPE_LABEL: Record<ScopeFilter, string> = {
   upcoming: "Upcoming",
   released: "Released",
   archived: "Archived",
+  deleted: "Deleted",
 };
 
 const TEMPLATE_LABEL: Record<TemplateFilter, string> = {
@@ -75,6 +77,7 @@ export default function ReleasesPage() {
   const [releases, setReleases] = useState<ReleaseWithMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [purgingId, setPurgingId] = useState<string | null>(null);
 
   const [scope, setScope] = useState<ScopeFilter>("upcoming");
   const [templateFilter, setTemplateFilter] = useState<TemplateFilter>("all");
@@ -101,6 +104,12 @@ export default function ReleasesPage() {
 
   const filtered = useMemo(() => {
     return releases.filter((r) => {
+      // Soft-deleted releases only appear under the Deleted scope.
+      if (scope === "deleted") {
+        if (!r.deletedAt) return false;
+      } else if (r.deletedAt) {
+        return false;
+      }
       if (scope === "upcoming" && (r.released || r.archived)) return false;
       if (scope === "released" && !r.released) return false;
       if (scope === "released" && r.archived) return false;
@@ -146,8 +155,12 @@ export default function ReleasesPage() {
   }, [filtered, sortKey, sortDir]);
 
   const counts = useMemo(() => {
-    const c = { all: 0, upcoming: 0, released: 0, archived: 0 };
+    const c = { all: 0, upcoming: 0, released: 0, archived: 0, deleted: 0 };
     for (const r of releases) {
+      if (r.deletedAt) {
+        c.deleted++;
+        continue;
+      }
       c.all++;
       if (r.archived) c.archived++;
       else if (r.released) c.released++;
@@ -155,6 +168,35 @@ export default function ReleasesPage() {
     }
     return c;
   }, [releases]);
+
+  const handlePurge = async (release: ReleaseWithMeta) => {
+    const msg =
+      `Purge "${release.name}"? This deletes the release and its task history from this app, ` +
+      `and attempts to delete any Google Tasks / Calendar events the app created for it.`;
+    if (!confirm(msg)) return;
+    setPurgingId(release.id);
+    try {
+      const res = await fetch(`/api/releases/${release.id}/purge`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || "Purge failed");
+        return;
+      }
+      setReleases((prev) => prev.filter((r) => r.id !== release.id));
+      if (data.errors && data.errors.length > 0) {
+        const lines = data.errors
+          .map((e: { label: string; error: string }) => `• ${e.label}: ${e.error}`)
+          .join("\n");
+        alert(
+          `Release purged. Some Google cleanup failed — delete these by hand:\n\n${lines}`,
+        );
+      }
+    } finally {
+      setPurgingId(null);
+    }
+  };
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -285,11 +327,17 @@ export default function ReleasesPage() {
                         onClick={toggleSort}
                         className="w-28"
                       />
+                      <th className="w-10" />
                     </tr>
                   </thead>
                   <tbody>
                     {sorted.map((release) => (
-                      <ReleaseRow key={release.id} release={release} />
+                      <ReleaseRow
+                        key={release.id}
+                        release={release}
+                        onPurge={handlePurge}
+                        purging={purgingId === release.id}
+                      />
                     ))}
                   </tbody>
                 </table>
@@ -378,7 +426,15 @@ function SortableTh({
   );
 }
 
-function ReleaseRow({ release }: { release: ReleaseWithMeta }) {
+function ReleaseRow({
+  release,
+  onPurge,
+  purging,
+}: {
+  release: ReleaseWithMeta;
+  onPurge: (release: ReleaseWithMeta) => void;
+  purging: boolean;
+}) {
   const { platform: p, releaseType: rt } = parseReleaseName(release.name);
   const date = relativeDate(release.releaseDate, release.released);
   const done = release.taskProgress.done;
@@ -393,7 +449,12 @@ function ReleaseRow({ release }: { release: ReleaseWithMeta }) {
           href={`/releases/${release.id}`}
           className="flex items-center gap-2 min-w-0"
         >
-          <span className="font-mono text-sm truncate group-hover:underline">
+          <span
+            className={cn(
+              "font-mono text-sm truncate group-hover:underline",
+              release.deletedAt && "line-through text-muted-foreground",
+            )}
+          >
             {release.name}
           </span>
           {p && (
@@ -457,6 +518,25 @@ function ReleaseRow({ release }: { release: ReleaseWithMeta }) {
       <td className="px-3 py-2.5">
         <StatusBadge release={release} />
       </td>
+
+      <td className="px-2 py-2.5 text-right">
+        {release.deletedAt && (
+          <button
+            type="button"
+            onClick={() => onPurge(release)}
+            disabled={purging}
+            title="Purge release — deletes it from this app and removes associated Google Tasks / Calendar events"
+            className="inline-flex items-center gap-1 h-6 px-2 rounded text-[11px] font-medium text-red-700 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-60"
+          >
+            {purging ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Trash2 className="h-3 w-3" />
+            )}
+            Purge
+          </button>
+        )}
+      </td>
     </tr>
   );
 }
@@ -492,6 +572,14 @@ function DateCell({
 }
 
 function StatusBadge({ release }: { release: ReleaseWithMeta }) {
+  if (release.deletedAt) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-red-500/10 text-red-700 dark:text-red-400">
+        <Trash2 className="h-3 w-3" />
+        Deleted in Jira
+      </span>
+    );
+  }
   if (release.archived) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded border text-muted-foreground">

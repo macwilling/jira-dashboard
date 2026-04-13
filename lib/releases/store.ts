@@ -10,6 +10,7 @@ interface ReleaseRow {
   start_date: string | null;
   released: number;
   archived: number;
+  deleted_at: string | null;
   jira_raw: string;
   received_at: string;
   updated_at: string;
@@ -31,6 +32,7 @@ function rowToRelease(row: ReleaseRow): Release {
     startDate: row.start_date,
     released: row.released === 1,
     archived: row.archived === 1,
+    deletedAt: row.deleted_at ?? null,
     jiraRaw,
     receivedAt: row.received_at,
     updatedAt: row.updated_at,
@@ -78,7 +80,26 @@ export async function upsertRelease(
   );
 }
 
+/**
+ * Soft-delete: marks the release as deleted but keeps the row (and its task
+ * instances) so the user can review and purge Google side-effects on their own
+ * schedule. Call `purgeRelease` to hard-delete.
+ */
 export async function deleteRelease(id: string): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases SET deleted_at = ?, updated_at = ? WHERE id = ?`,
+    [now, now, id],
+  );
+}
+
+/**
+ * Hard-delete: removes the release row. Task instances cascade-delete via FK.
+ * Any Google-side artifacts (Tasks, Calendar events) must be cleaned up by the
+ * caller before purging — once the task instance rows are gone, their
+ * external_id refs are too.
+ */
+export async function purgeRelease(id: string): Promise<void> {
   await d1Query(`DELETE FROM releases WHERE id = ?`, [id]);
 }
 

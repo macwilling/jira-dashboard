@@ -288,6 +288,23 @@ export async function updateGoogleTaskDue(
   }
 }
 
+/** Delete a Google Task. 404 is treated as success (already gone). */
+export async function deleteGoogleTask(
+  taskListId: string,
+  taskId: string,
+): Promise<void> {
+  const token = await getAccessToken();
+  const res = await fetch(
+    `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (res.status === 404) return;
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Delete task failed: ${res.status} ${text}`);
+  }
+}
+
 // ─── Google Calendar API ───────────────────────────────────────────────────────
 
 export interface CalendarListEntry {
@@ -434,5 +451,22 @@ export async function updateCalendarEventDate(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Update event failed: ${res.status} ${text}`);
+  }
+}
+
+/** Delete a Calendar event. 404 / 410 are treated as success (already gone). */
+export async function deleteCalendarEvent(
+  calendarId: string,
+  eventId: string,
+): Promise<void> {
+  const token = await getAccessToken();
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (res.status === 404 || res.status === 410) return;
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Delete event failed: ${res.status} ${text}`);
   }
 }

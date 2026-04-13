@@ -79,14 +79,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, action: "deleted", id: version.id });
     }
 
-    // Capture old release_date before upserting
+    // Normalize empty-string dates (Jira automation smart values render unset
+    // dates as "") to undefined so downstream stores null and transition
+    // detection below works cleanly.
+    const normalizedVersion: JiraVersionPayload = {
+      ...version,
+      releaseDate: version.releaseDate || undefined,
+      startDate: version.startDate || undefined,
+    };
+
     const previousRelease = await getRelease(String(version.id)).catch(() => null);
     const previousDate = previousRelease?.releaseDate ?? null;
-    const isNew = previousRelease === null;
 
-    await upsertRelease(version, body);
+    await upsertRelease(normalizedVersion, body);
 
-    const newDate = version.releaseDate ?? null;
+    const newDate = normalizedVersion.releaseDate ?? null;
     const release = await getRelease(String(version.id));
     if (!release) {
       return NextResponse.json({
@@ -98,29 +105,37 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Generate on first upsert (idempotent — only runs if no instances exist yet).
-    await maybeGenerateInstances(release).catch(
-      (err) => console.warn("[webhook] maybeGenerateInstances failed", err)
-    );
+    // Template tasks are keyed off release_date, so only generate/dispatch when
+    // a date is present. Releases created without a date are stored in D1 and
+    // will fire on the later update that sets the date (previousDate → newDate).
+    const dateNewlySet = !previousDate && !!newDate;
+    const dateChanged = !!previousDate && !!newDate && previousDate !== newDate;
 
-    if (!isNew && newDate !== previousDate) {
-      // Existing release with a changed date — cascade before dispatching so new
-      // rows (if any were just generated) land with the current date.
-      await cascadeReleaseDateChange(String(version.id), newDate).catch(
-        (err) => console.warn("[webhook] cascadeReleaseDateChange failed", err)
+    // Don't regenerate Google side-effects for a release the user has soft-deleted.
+    // They'll purge via the Releases UI when ready.
+    if (newDate && !release.deletedAt) {
+      await maybeGenerateInstances(release).catch(
+        (err) => console.warn("[webhook] maybeGenerateInstances failed", err)
+      );
+
+      if (dateChanged) {
+        await cascadeReleaseDateChange(String(version.id), newDate).catch(
+          (err) => console.warn("[webhook] cascadeReleaseDateChange failed", err)
+        );
+      }
+
+      await autoDispatchPendingInstances(String(version.id)).catch(
+        (err) => console.warn("[webhook] autoDispatchPendingInstances failed", err)
       );
     }
-
-    // Fire Google side-effects for any still-pending dispatchable tasks.
-    await autoDispatchPendingInstances(String(version.id)).catch(
-      (err) => console.warn("[webhook] autoDispatchPendingInstances failed", err)
-    );
 
     return NextResponse.json({
       ok: true,
       action: "upserted",
       id: version.id,
       event: webhookEvent,
+      tasksFired: !!newDate,
+      dateNewlySet,
     });
   } catch (e) {
     console.error("[webhook jira version] failed", e);
