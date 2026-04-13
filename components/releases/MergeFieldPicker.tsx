@@ -5,6 +5,7 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -38,7 +39,7 @@ export function MergeFieldPicker({ onInsert, className }: Props) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[280px]">
         {groupOrder.map((group, i) => (
-          <div key={group}>
+          <DropdownMenuGroup key={group}>
             {i > 0 && <DropdownMenuSeparator />}
             <DropdownMenuLabel>{group}</DropdownMenuLabel>
             {groups[group]?.map((f) => (
@@ -53,7 +54,7 @@ export function MergeFieldPicker({ onInsert, className }: Props) {
                 </code>
               </DropdownMenuItem>
             ))}
-          </div>
+          </DropdownMenuGroup>
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
