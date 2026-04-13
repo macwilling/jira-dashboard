@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { ArrowLeft, CheckCircle2, XCircle, Loader2, Save } from "lucide-react";
+import { ArrowLeft, CheckCircle2, XCircle, Loader2, Save, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,13 @@ interface ConfigStatus {
   } | null;
 }
 
+interface GoogleStatus {
+  configured: boolean;
+  connected: boolean;
+  email: string | null;
+  connectedAt: string | null;
+}
+
 export default function SettingsPage() {
   const [status, setStatus] = useState<ConfigStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,12 +37,35 @@ export default function SettingsPage() {
   const [testResult, setTestResult] = useState<{ count: number } | null>(null);
   const [saved, setSaved] = useState(false);
 
+  const [googleStatus, setGoogleStatus] = useState<GoogleStatus | null>(null);
+  const [googleDisconnecting, setGoogleDisconnecting] = useState(false);
+
   const [jqlFilter, setJqlFilter] = useState("");
   const [l2Labels, setL2Labels] = useState("");
   const [sprintFieldId, setSprintFieldId] = useState("");
   const [boardId, setBoardId] = useState("");
   const [standupTime, setStandupTime] = useState("09:00");
   const [standupTimezone, setStandupTimezone] = useState("");
+
+  const loadGoogleStatus = useCallback(() => {
+    fetch("/api/google/status")
+      .then((r) => r.json())
+      .then((d: GoogleStatus) => setGoogleStatus(d))
+      .catch(() => {});
+  }, []);
+
+  // Check for OAuth redirect result in URL params
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("google_connected")) {
+      loadGoogleStatus();
+      // Clean the URL
+      window.history.replaceState({}, "", "/settings");
+    } else if (params.get("google_error")) {
+      loadGoogleStatus();
+      window.history.replaceState({}, "", "/settings");
+    }
+  }, [loadGoogleStatus]);
 
   // Load current config
   useEffect(() => {
@@ -54,7 +84,9 @@ export default function SettingsPage() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+
+    loadGoogleStatus();
+  }, [loadGoogleStatus]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -81,6 +113,13 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleGoogleDisconnect = async () => {
+    setGoogleDisconnecting(true);
+    await fetch("/api/auth/google", { method: "DELETE" });
+    setGoogleDisconnecting(false);
+    loadGoogleStatus();
   };
 
   const handleTest = async () => {
@@ -260,6 +299,79 @@ export default function SettingsPage() {
                 Find the board ID in your board&apos;s URL: <code className="bg-muted px-1 rounded">/board/42</code>.
               </p>
             </div>
+          </div>
+        </section>
+
+        {/* Google Integration */}
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Google Integration
+          </h2>
+          <div className="rounded-lg border p-4 space-y-3">
+            {!googleStatus?.configured ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <XCircle className="h-4 w-4 shrink-0" />
+                  <span>
+                    Not configured — set{" "}
+                    <code className="text-xs bg-muted px-1 py-0.5 rounded">GOOGLE_CLIENT_ID</code>{" "}
+                    and{" "}
+                    <code className="text-xs bg-muted px-1 py-0.5 rounded">GOOGLE_CLIENT_SECRET</code>{" "}
+                    in environment variables.
+                  </span>
+                </div>
+                <p className="text-xxs text-muted-foreground pl-6">
+                  Create OAuth 2.0 credentials in{" "}
+                  <span className="font-medium">Google Cloud Console</span> with the Tasks API and
+                  Calendar API enabled. Set the authorized redirect URI to{" "}
+                  <code className="bg-muted px-1 rounded">https://your-domain/api/auth/google/callback</code>.
+                </p>
+              </div>
+            ) : googleStatus.connected ? (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm">
+                  <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+                  <span>
+                    Connected as{" "}
+                    <span className="font-medium">{googleStatus.email}</span>
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-muted-foreground gap-1.5"
+                  onClick={handleGoogleDisconnect}
+                  disabled={googleDisconnecting}
+                >
+                  {googleDisconnecting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <LogOut className="h-3.5 w-3.5" />
+                  )}
+                  Disconnect
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <XCircle className="h-4 w-4 shrink-0" />
+                  <span>Not connected</span>
+                </div>
+                <a href="/api/auth/google">
+                  <Button size="sm" className="h-7 text-xs">
+                    Connect Google
+                  </Button>
+                </a>
+              </div>
+            )}
+            {googleStatus?.configured && (
+              <p className="text-xxs text-muted-foreground">
+                Used for release checklist tasks with action type{" "}
+                <span className="font-medium">Google Task</span> or{" "}
+                <span className="font-medium">Calendar Event</span>. Grants access to Tasks and
+                Calendar only.
+              </p>
+            )}
           </div>
         </section>
 

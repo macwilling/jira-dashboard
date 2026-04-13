@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Search, Loader2, Settings, LogOut, RefreshCw, BarChart3 } from "lucide-react";
+import { Search, Loader2, Settings, LogOut, RefreshCw, BarChart3, Package } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { TeamCard } from "@/components/TeamCard";
@@ -174,6 +174,13 @@ export default function Home() {
               title="Progress"
             >
               <BarChart3 className="h-3.5 w-3.5" />
+            </Link>
+            <Link
+              href="/releases"
+              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              title="Releases"
+            >
+              <Package className="h-3.5 w-3.5" />
             </Link>
             <button
               onClick={handleRefresh}

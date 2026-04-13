@@ -24,6 +24,47 @@ export interface JiraVersionPayload {
   projectId: number | string;
 }
 
+export type ActionType = "manual" | "google_task" | "calendar_event" | "slack_message";
+export type ReleaseType = "major" | "minor" | "patch";
+export type TaskInstanceStatus = "pending" | "done" | "skipped";
+
+export interface ReleaseTemplate {
+  id: string;
+  name: string;
+  platformPrefix: string | null;
+  releaseType: ReleaseType | null;
+  priority: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReleaseTemplateTask {
+  id: string;
+  templateId: string;
+  label: string;
+  actionType: ActionType;
+  dayOffset: number;
+  position: number;
+  actionConfig: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReleaseTaskInstance {
+  id: string;
+  releaseId: string;
+  templateTaskId: string;
+  templateId: string;
+  label: string;
+  actionType: ActionType;
+  dayOffset: number;
+  dueDate: string | null;
+  status: TaskInstanceStatus;
+  actionConfig: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type JiraVersionWebhookEvent =
   | "jira:version_created"
   | "jira:version_updated"

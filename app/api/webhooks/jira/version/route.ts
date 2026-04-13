@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   deleteRelease,
   upsertRelease,
+  getRelease,
 } from "@/lib/releases/store";
+import {
+  cascadeTaskDates,
+  maybeGenerateInstances,
+} from "@/lib/releases/templates-store";
 import type {
   JiraVersionPayload,
   JiraVersionWebhookEvent,
@@ -73,7 +78,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, action: "deleted", id: version.id });
     }
 
+    // Capture old release_date before upserting
+    const previousRelease = await getRelease(String(version.id)).catch(() => null);
+    const previousDate = previousRelease?.releaseDate ?? null;
+    const isNew = previousRelease === null;
+
     await upsertRelease(version, body);
+
+    const newDate = version.releaseDate ?? null;
+    if (isNew) {
+      // New release: try to generate task instances from a matched template
+      await maybeGenerateInstances(String(version.id), version.name, newDate).catch(
+        (err) => console.warn("[webhook] maybeGenerateInstances failed", err)
+      );
+    } else if (newDate !== previousDate) {
+      // Existing release with a changed release date: cascade due dates
+      await cascadeTaskDates(String(version.id), newDate).catch(
+        (err) => console.warn("[webhook] cascadeTaskDates failed", err)
+      );
+    }
+
     return NextResponse.json({
       ok: true,
       action: "upserted",
