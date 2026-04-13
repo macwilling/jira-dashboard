@@ -1,19 +1,17 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import useSWR from "swr";
-import { ArrowLeft, Search, Loader2, Settings, LogOut, RefreshCw, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { Search, Loader2, RefreshCw, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
 import { TicketDrawer } from "@/components/TicketDrawer";
 import { SearchBar } from "@/components/SearchBar";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { AppShell } from "@/components/app-shell/AppShell";
 import { FilterBar, ScopeFilter, GroupByOption } from "@/components/progress/FilterBar";
 import { StoryCard } from "@/components/progress/StoryCard";
 import { TaskChipBadge } from "@/components/progress/TaskChipBadge";
 import { useTicketData } from "@/lib/ticket-data-context";
 import { buildProgressData } from "@/lib/progress-utils";
-import { isStale as isStaleUtil } from "@/lib/utils";
+import { isStale as isStaleUtil, cn } from "@/lib/utils";
 import { getEpicColor } from "@/lib/utils";
 import { Ticket, TicketStatus, TeamMember } from "@/lib/types";
 
@@ -28,12 +26,6 @@ const fetcher = async (url: string) => {
 
 export default function ProgressPage() {
   const ctx = useTicketData();
-  const router = useRouter();
-
-  const handleLogout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/login");
-  };
 
   // --- Filter state ---
   const [scope, setScope] = useState<ScopeFilter>("sprint");
@@ -229,61 +221,44 @@ export default function ProgressPage() {
     []
   );
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "/" && !e.ctrlKey && !e.metaKey) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const topbarActions = (
+    <>
+      <button
+        onClick={() => setSearchOpen(true)}
+        className="flex items-center gap-2 px-2.5 h-7 rounded-md border bg-muted/50 text-muted-foreground hover:bg-muted transition-colors w-full max-w-sm"
+      >
+        <Search className="h-3.5 w-3.5 shrink-0" />
+        <span className="text-xs">Search tickets...</span>
+        <kbd className="ml-auto text-[10px] bg-background px-1.5 py-0 rounded border font-mono">/</kbd>
+      </button>
+      <button
+        onClick={handleRefresh}
+        disabled={refreshing}
+        className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50 shrink-0"
+        title="Refresh tickets"
+      >
+        <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+      </button>
+    </>
+  );
+
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="flex items-center justify-between h-11 px-4">
-          <div className="flex items-center gap-2 shrink-0">
-            <Link
-              href="/"
-              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              title="Back to Dashboard"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-            </Link>
-            <h1 className="text-sm font-semibold tracking-tight">Progress</h1>
-          </div>
-
-          <button
-            onClick={() => setSearchOpen(true)}
-            className="flex items-center gap-2 px-2.5 py-1 h-7 rounded-md border bg-muted/50 text-muted-foreground hover:bg-muted transition-colors w-full max-w-sm mx-4"
-          >
-            <Search className="h-3.5 w-3.5 shrink-0" />
-            <span className="text-xs">Search tickets...</span>
-            <kbd className="ml-auto text-xxs bg-background px-1.5 py-0 rounded border font-mono">/</kbd>
-          </button>
-
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={handleRefresh}
-              disabled={refreshing}
-              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
-              title="Refresh tickets"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
-            </button>
-            <ThemeToggle />
-            <Link
-              href="/settings"
-              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              title="Settings"
-            >
-              <Settings className="h-3.5 w-3.5" />
-            </Link>
-            <button
-              onClick={handleLogout}
-              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              title="Logout"
-            >
-              <LogOut className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-      </header>
-
+    <AppShell title="Progress" actions={topbarActions}>
       {/* Filter bar */}
-      <div className="border-b bg-background px-4 py-2">
+      <div className="sticky top-0 z-20 border-b bg-background px-4 py-2">
         <div className="max-w-5xl mx-auto flex items-center gap-2">
           <FilterBar
             scope={scope}
@@ -426,6 +401,6 @@ export default function ProgressPage() {
         onBack={handleTicketBack}
         onBreadcrumbNav={handleBreadcrumbNav}
       />
-    </div>
+    </AppShell>
   );
 }

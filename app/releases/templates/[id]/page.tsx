@@ -4,13 +4,13 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  ArrowLeft,
   Loader2,
   Plus,
   Trash2,
   Save,
   GripVertical,
 } from "lucide-react";
+import { AppShell } from "@/components/app-shell/AppShell";
 import {
   DndContext,
   closestCenter,
@@ -311,53 +311,46 @@ export default function TemplateEditorPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-      </div>
+      <AppShell title="Edit Template">
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      </AppShell>
     );
   }
 
   if (!template) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-sm text-destructive">Template not found.</p>
-      </div>
+      <AppShell title="Edit Template">
+        <div className="flex items-center justify-center py-20">
+          <p className="text-sm text-destructive">Template not found.</p>
+        </div>
+      </AppShell>
     );
   }
 
-  return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
-        <div className="flex items-center justify-between h-11 px-4">
-          <div className="flex items-center gap-2">
-            <Link
-              href="/releases/templates"
-              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-            </Link>
-            <h1 className="text-sm font-semibold tracking-tight">Edit Template</h1>
-          </div>
-          <div className="flex items-center gap-2">
-            {saved && <span className="text-xs text-green-600">Saved</span>}
-            <Button
-              size="sm"
-              className="h-7 text-xs gap-1.5"
-              onClick={handleSave}
-              disabled={saving || !name.trim()}
-            >
-              {saving ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Save className="h-3.5 w-3.5" />
-              )}
-              Save
-            </Button>
-          </div>
-        </div>
-      </header>
+  const actions = (
+    <div className="ml-auto flex items-center gap-2">
+      {saved && <span className="text-xs text-green-600">Saved</span>}
+      <Button
+        size="sm"
+        className="h-7 text-xs gap-1.5"
+        onClick={handleSave}
+        disabled={saving || !name.trim()}
+      >
+        {saving ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Save className="h-3.5 w-3.5" />
+        )}
+        Save
+      </Button>
+    </div>
+  );
 
-      <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
+  return (
+    <AppShell title="Edit Template" subtitle={template.name} actions={actions}>
+      <main className="max-w-3xl mx-auto px-6 py-8 space-y-8">
         {/* Template metadata */}
         <section className="space-y-4">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -513,6 +506,6 @@ export default function TemplateEditorPage() {
           </Button>
         </section>
       </main>
-    </div>
+    </AppShell>
   );
 }

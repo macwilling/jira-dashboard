@@ -4,12 +4,12 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft,
   Loader2,
   Plus,
   GripVertical,
   ListChecks,
 } from "lucide-react";
+import { AppShell } from "@/components/app-shell/AppShell";
 import {
   DndContext,
   closestCenter,
@@ -147,41 +147,30 @@ export default function TemplatesPage() {
     }
   };
 
-  return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
-        <div className="flex items-center justify-between h-11 px-4">
-          <div className="flex items-center gap-2">
-            <Link
-              href="/releases"
-              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-            </Link>
-            <h1 className="text-sm font-semibold tracking-tight">
-              Release Templates
-            </h1>
-            {saving && (
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-            )}
-          </div>
-          <Button
-            size="sm"
-            className="h-7 text-xs gap-1.5"
-            onClick={handleCreate}
-            disabled={creating}
-          >
-            {creating ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Plus className="h-3.5 w-3.5" />
-            )}
-            New Template
-          </Button>
-        </div>
-      </header>
+  const actions = (
+    <div className="ml-auto flex items-center gap-2">
+      {saving && (
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+      )}
+      <Button
+        size="sm"
+        className="h-7 text-xs gap-1.5"
+        onClick={handleCreate}
+        disabled={creating}
+      >
+        {creating ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Plus className="h-3.5 w-3.5" />
+        )}
+        New Template
+      </Button>
+    </div>
+  );
 
-      <main className="max-w-2xl mx-auto px-4 py-8 space-y-4">
+  return (
+    <AppShell title="Release Templates" actions={actions}>
+      <main className="max-w-3xl mx-auto px-6 py-8 space-y-4">
         <p className="text-xs text-muted-foreground">
           Templates are matched in priority order (top = highest). The first
           template whose platform and release type filters match the release name
@@ -223,6 +212,6 @@ export default function TemplatesPage() {
           </DndContext>
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }

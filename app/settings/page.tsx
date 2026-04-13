@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import Link from "next/link";
-import { ArrowLeft, CheckCircle2, XCircle, Loader2, Save, LogOut } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, Save, LogOut } from "lucide-react";
+import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -140,24 +140,17 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-      </div>
+      <AppShell title="Settings">
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      </AppShell>
     );
   }
 
   return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
-        <div className="flex items-center h-11 px-4 gap-3">
-          <Link href="/" className="text-muted-foreground hover:text-foreground transition-colors">
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <h1 className="text-sm font-semibold">Settings</h1>
-        </div>
-      </header>
-
-      <main className="max-w-xl mx-auto px-4 py-8 space-y-8">
+    <AppShell title="Settings">
+      <main className="max-w-2xl mx-auto px-6 py-8 space-y-8">
         {/* Jira Connection Status */}
         <section className="space-y-3">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -418,6 +411,6 @@ export default function SettingsPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }
