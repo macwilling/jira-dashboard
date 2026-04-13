@@ -3,6 +3,9 @@ import { listReleases } from "@/lib/releases/store";
 import { listTemplates, listTaskInstances } from "@/lib/releases/templates-store";
 import { matchTemplate } from "@/lib/releases/matcher";
 
+// Hits Cloudflare D1 at request time — never prerender.
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   try {
     const [releases, templates] = await Promise.all([
