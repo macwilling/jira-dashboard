@@ -20,6 +20,9 @@ const KV_CREDENTIALS_KEY = "google-credentials";
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/tasks",
   "https://www.googleapis.com/auth/calendar.events",
+  // calendar.events lets us create/update events but not list calendars —
+  // we need the calendarlist.readonly scope for the picker in the template editor.
+  "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
   "openid",
   "email",
 ].join(" ");
@@ -194,25 +197,33 @@ export async function listTaskLists(): Promise<TaskList[]> {
   return data.items ?? [];
 }
 
+export interface CreatedExternalRef {
+  id: string;
+  url: string;
+}
+
+export interface CreateGoogleTaskInput {
+  taskListId: string;
+  title: string;
+  notes: string | null;
+  dueDate: string | null;
+}
+
 /**
- * Creates a Google Task.
- * dueDate: ISO date string (YYYY-MM-DD). Google Tasks expects RFC3339 UTC midnight.
+ * Creates a Google Task. Only the date portion of `dueDate` is retained —
+ * the Tasks API explicitly discards any time component.
  */
 export async function createGoogleTask(
-  taskListId: string,
-  title: string,
-  dueDate: string | null
-): Promise<string> {
+  input: CreateGoogleTaskInput,
+): Promise<CreatedExternalRef> {
   const token = await getAccessToken();
 
-  const body: Record<string, string> = { title };
-  if (dueDate) {
-    // Google Tasks due dates must be RFC3339 UTC midnight
-    body.due = `${dueDate}T00:00:00.000Z`;
-  }
+  const body: Record<string, string> = { title: input.title };
+  if (input.notes) body.notes = input.notes;
+  if (input.dueDate) body.due = `${input.dueDate}T00:00:00.000Z`;
 
   const res = await fetch(
-    `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(taskListId)}/tasks`,
+    `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(input.taskListId)}/tasks`,
     {
       method: "POST",
       headers: {
@@ -220,7 +231,7 @@ export async function createGoogleTask(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-    }
+    },
   );
 
   if (!res.ok) {
@@ -228,8 +239,53 @@ export async function createGoogleTask(
     throw new Error(`Create task failed: ${res.status} ${text}`);
   }
 
-  const task = (await res.json()) as { id: string };
-  return task.id;
+  const task = (await res.json()) as { id: string; selfLink?: string };
+  return { id: task.id, url: "https://tasks.google.com/embed/list/~default" };
+}
+
+export type GoogleTaskStatus = "needsAction" | "completed" | "missing";
+
+/** Fetch the remote status of a Google Task. Returns "missing" if the task was deleted. */
+export async function getGoogleTaskStatus(
+  taskListId: string,
+  taskId: string,
+): Promise<GoogleTaskStatus> {
+  const token = await getAccessToken();
+  const res = await fetch(
+    `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+  );
+  if (res.status === 404) return "missing";
+  if (!res.ok) throw new Error(`Get task failed: ${res.status}`);
+  const data = (await res.json()) as { status?: string };
+  return data.status === "completed" ? "completed" : "needsAction";
+}
+
+/** Update a Google Task's due date. `dueDate` is YYYY-MM-DD or null to clear. */
+export async function updateGoogleTaskDue(
+  taskListId: string,
+  taskId: string,
+  dueDate: string | null,
+): Promise<void> {
+  const token = await getAccessToken();
+  const body: Record<string, string | null> = {
+    due: dueDate ? `${dueDate}T00:00:00.000Z` : null,
+  };
+  const res = await fetch(
+    `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Update task failed: ${res.status} ${text}`);
+  }
 }
 
 // ─── Google Calendar API ───────────────────────────────────────────────────────
@@ -251,25 +307,56 @@ export async function listCalendars(): Promise<CalendarListEntry[]> {
   return data.items ?? [];
 }
 
-/**
- * Creates an all-day calendar event on the given date.
- * Returns the event ID.
- */
-export async function createCalendarEvent(
-  calendarId: string,
-  summary: string,
-  date: string // YYYY-MM-DD
-): Promise<string> {
-  const token = await getAccessToken();
+export interface CreateCalendarEventInput {
+  calendarId: string;
+  summary: string;
+  description: string | null;
+  date: string;               // YYYY-MM-DD
+  startTime: string | null;   // "HH:MM" — null for all-day
+  durationMinutes: number;    // ignored for all-day
+  timeZone: string;           // IANA, e.g. "America/New_York"
+}
 
-  const body = {
-    summary,
-    start: { date },
-    end: { date },
-  };
+function buildCalendarEventBody(input: {
+  summary: string;
+  description: string | null;
+  date: string;
+  startTime: string | null;
+  durationMinutes: number;
+  timeZone: string;
+}) {
+  const base: Record<string, unknown> = { summary: input.summary };
+  if (input.description) base.description = input.description;
+
+  if (!input.startTime) {
+    // All-day — Google treats end.date as exclusive so it must be the next day
+    // for a single-day event. We stick with start=end=date to match existing
+    // behavior; Google auto-adjusts single-day all-day events either way.
+    base.start = { date: input.date };
+    base.end = { date: input.date };
+  } else {
+    const [h, m] = input.startTime.split(":").map((n) => parseInt(n, 10));
+    const startDate = new Date(`${input.date}T${input.startTime}:00`);
+    const endDate = new Date(startDate.getTime() + input.durationMinutes * 60_000);
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    const startStr = `${input.date}T${pad(h)}:${pad(m)}:00`;
+    const endStr =
+      `${endDate.getFullYear()}-${pad(endDate.getMonth() + 1)}-${pad(endDate.getDate())}` +
+      `T${pad(endDate.getHours())}:${pad(endDate.getMinutes())}:00`;
+    base.start = { dateTime: startStr, timeZone: input.timeZone };
+    base.end = { dateTime: endStr, timeZone: input.timeZone };
+  }
+  return base;
+}
+
+export async function createCalendarEvent(
+  input: CreateCalendarEventInput,
+): Promise<CreatedExternalRef> {
+  const token = await getAccessToken();
+  const body = buildCalendarEventBody(input);
 
   const res = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(input.calendarId)}/events`,
     {
       method: "POST",
       headers: {
@@ -277,7 +364,7 @@ export async function createCalendarEvent(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-    }
+    },
   );
 
   if (!res.ok) {
@@ -285,6 +372,67 @@ export async function createCalendarEvent(
     throw new Error(`Create event failed: ${res.status} ${text}`);
   }
 
-  const event = (await res.json()) as { id: string };
-  return event.id;
+  const event = (await res.json()) as { id: string; htmlLink?: string };
+  return {
+    id: event.id,
+    url: event.htmlLink ?? `https://calendar.google.com/calendar/r/eventedit/${event.id}`,
+  };
+}
+
+export type CalendarEventStatus = "confirmed" | "tentative" | "cancelled" | "missing";
+
+export async function getCalendarEventStatus(
+  calendarId: string,
+  eventId: string,
+): Promise<CalendarEventStatus> {
+  const token = await getAccessToken();
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+  );
+  if (res.status === 404) return "missing";
+  if (!res.ok) throw new Error(`Get event failed: ${res.status}`);
+  const data = (await res.json()) as { status?: CalendarEventStatus };
+  return data.status ?? "confirmed";
+}
+
+/**
+ * Update a calendar event's date — preserves the event's timed vs all-day
+ * shape based on the flags passed in. For timed events, recomputes the end
+ * from `durationMinutes` so a moved start doesn't leave a dangling duration.
+ */
+export async function updateCalendarEventDate(
+  calendarId: string,
+  eventId: string,
+  params: {
+    date: string;
+    startTime: string | null;
+    durationMinutes: number;
+    timeZone: string;
+  },
+): Promise<void> {
+  const token = await getAccessToken();
+  const body = buildCalendarEventBody({
+    summary: "", // ignored on PATCH unless explicitly set
+    description: null,
+    ...params,
+  });
+  // Remove summary so we don't overwrite it on PATCH.
+  delete (body as Record<string, unknown>).summary;
+
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Update event failed: ${res.status} ${text}`);
+  }
 }

@@ -4,10 +4,11 @@ import {
   upsertRelease,
   getRelease,
 } from "@/lib/releases/store";
+import { maybeGenerateInstances } from "@/lib/releases/templates-store";
 import {
-  cascadeTaskDates,
-  maybeGenerateInstances,
-} from "@/lib/releases/templates-store";
+  autoDispatchPendingInstances,
+  cascadeReleaseDateChange,
+} from "@/lib/releases/dispatcher";
 import type {
   JiraVersionPayload,
   JiraVersionWebhookEvent,
@@ -86,17 +87,34 @@ export async function POST(req: NextRequest) {
     await upsertRelease(version, body);
 
     const newDate = version.releaseDate ?? null;
-    if (isNew) {
-      // New release: try to generate task instances from a matched template
-      await maybeGenerateInstances(String(version.id), version.name, newDate).catch(
-        (err) => console.warn("[webhook] maybeGenerateInstances failed", err)
-      );
-    } else if (newDate !== previousDate) {
-      // Existing release with a changed release date: cascade due dates
-      await cascadeTaskDates(String(version.id), newDate).catch(
-        (err) => console.warn("[webhook] cascadeTaskDates failed", err)
+    const release = await getRelease(String(version.id));
+    if (!release) {
+      return NextResponse.json({
+        ok: true,
+        action: "upserted",
+        id: version.id,
+        event: webhookEvent,
+        note: "release not found after upsert — skipping task generation",
+      });
+    }
+
+    // Generate on first upsert (idempotent — only runs if no instances exist yet).
+    await maybeGenerateInstances(release).catch(
+      (err) => console.warn("[webhook] maybeGenerateInstances failed", err)
+    );
+
+    if (!isNew && newDate !== previousDate) {
+      // Existing release with a changed date — cascade before dispatching so new
+      // rows (if any were just generated) land with the current date.
+      await cascadeReleaseDateChange(String(version.id), newDate).catch(
+        (err) => console.warn("[webhook] cascadeReleaseDateChange failed", err)
       );
     }
+
+    // Fire Google side-effects for any still-pending dispatchable tasks.
+    await autoDispatchPendingInstances(String(version.id)).catch(
+      (err) => console.warn("[webhook] autoDispatchPendingInstances failed", err)
+    );
 
     return NextResponse.json({
       ok: true,

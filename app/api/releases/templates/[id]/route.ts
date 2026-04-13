@@ -39,8 +39,12 @@ export async function PUT(
       releaseType?: ReleaseType | null;
       tasks?: Array<{
         label: string;
+        description?: string | null;
         actionType: ActionType;
         dayOffset: number;
+        allDay?: boolean;
+        startTime?: string | null;
+        durationMinutes?: number;
         actionConfig?: Record<string, unknown> | null;
       }>;
     };

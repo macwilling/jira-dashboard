@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRelease } from "@/lib/releases/store";
-import { listTemplates, listTaskInstances } from "@/lib/releases/templates-store";
+import {
+  listTemplates,
+  listTaskInstances,
+  listTemplateTasks,
+} from "@/lib/releases/templates-store";
 import { matchTemplate } from "@/lib/releases/matcher";
 
 export async function GET(
@@ -19,11 +23,15 @@ export async function GET(
     }
 
     const matched = matchTemplate(release.name, templates);
-    const instances = await listTaskInstances(id);
+    const [instances, templateTaskCount] = await Promise.all([
+      listTaskInstances(id),
+      matched ? listTemplateTasks(matched.id).then((t) => t.length) : Promise.resolve(0),
+    ]);
 
     return NextResponse.json({
       release,
       matchedTemplate: matched ?? null,
+      matchedTemplateTaskCount: templateTaskCount,
       taskInstances: instances,
     });
   } catch (e) {

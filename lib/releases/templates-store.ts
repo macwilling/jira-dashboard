@@ -1,6 +1,8 @@
 import { d1Query } from "@/lib/d1/client";
 import { addDays, matchTemplate } from "./matcher";
+import { buildMergeContext, renderMergeFields } from "./merge-fields";
 import type {
+  Release,
   ReleaseTemplate,
   ReleaseTemplateTask,
   ReleaseTaskInstance,
@@ -25,8 +27,12 @@ interface TemplateTaskRow {
   id: string;
   template_id: string;
   label: string;
+  description: string | null;
   action_type: string;
   day_offset: number;
+  all_day: number;
+  start_time: string | null;
+  duration_minutes: number;
   position: number;
   action_config: string | null;
   created_at: string;
@@ -39,11 +45,19 @@ interface TaskInstanceRow {
   template_task_id: string;
   template_id: string;
   label: string;
+  description: string | null;
   action_type: string;
   day_offset: number;
+  all_day: number;
+  start_time: string | null;
+  duration_minutes: number;
   due_date: string | null;
   status: string;
   action_config: string | null;
+  external_id: string | null;
+  external_url: string | null;
+  last_dispatch_error: string | null;
+  last_dispatch_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -75,8 +89,12 @@ function rowToTemplateTask(row: TemplateTaskRow): ReleaseTemplateTask {
     id: row.id,
     templateId: row.template_id,
     label: row.label,
+    description: row.description,
     actionType: row.action_type as ActionType,
     dayOffset: row.day_offset,
+    allDay: row.all_day === 1,
+    startTime: row.start_time,
+    durationMinutes: row.duration_minutes,
     position: row.position,
     actionConfig,
     createdAt: row.created_at,
@@ -99,11 +117,19 @@ function rowToTaskInstance(row: TaskInstanceRow): ReleaseTaskInstance {
     templateTaskId: row.template_task_id,
     templateId: row.template_id,
     label: row.label,
+    description: row.description,
     actionType: row.action_type as ActionType,
     dayOffset: row.day_offset,
+    allDay: row.all_day === 1,
+    startTime: row.start_time,
+    durationMinutes: row.duration_minutes,
     dueDate: row.due_date,
     status: row.status as TaskInstanceStatus,
     actionConfig,
+    externalId: row.external_id,
+    externalUrl: row.external_url,
+    lastDispatchError: row.last_dispatch_error,
+    lastDispatchAt: row.last_dispatch_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -273,8 +299,12 @@ export async function createTemplateTask(data: {
     id,
     templateId: data.templateId,
     label: data.label,
+    description: null,
     actionType: data.actionType,
     dayOffset: data.dayOffset,
+    allDay: true,
+    startTime: null,
+    durationMinutes: 30,
     position,
     actionConfig: data.actionConfig ?? null,
     createdAt: now,
@@ -320,14 +350,20 @@ export async function deleteTemplateTask(id: string): Promise<void> {
  * Replace all tasks for a template in one shot (used by the editor's Save).
  * Deletes existing tasks and inserts the new list.
  */
+export interface TemplateTaskInput {
+  label: string;
+  description?: string | null;
+  actionType: ActionType;
+  dayOffset: number;
+  allDay?: boolean;
+  startTime?: string | null;
+  durationMinutes?: number;
+  actionConfig?: Record<string, unknown> | null;
+}
+
 export async function replaceTemplateTasks(
   templateId: string,
-  tasks: Array<{
-    label: string;
-    actionType: ActionType;
-    dayOffset: number;
-    actionConfig?: Record<string, unknown> | null;
-  }>
+  tasks: TemplateTaskInput[]
 ): Promise<ReleaseTemplateTask[]> {
   await d1Query(
     `DELETE FROM release_template_tasks WHERE template_id = ?`,
@@ -338,16 +374,25 @@ export async function replaceTemplateTasks(
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
     const id = newId();
+    const allDay = t.allDay ?? true;
+    const startTime = allDay ? null : t.startTime ?? null;
+    const durationMinutes = t.durationMinutes ?? 30;
     await d1Query(
       `INSERT INTO release_template_tasks
-         (id, template_id, label, action_type, day_offset, position, action_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, template_id, label, description, action_type, day_offset,
+          all_day, start_time, duration_minutes, position, action_config,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         templateId,
         t.label,
+        t.description ?? null,
         t.actionType,
         t.dayOffset,
+        allDay ? 1 : 0,
+        startTime,
+        durationMinutes,
         i,
         t.actionConfig ? JSON.stringify(t.actionConfig) : null,
         now,
@@ -358,8 +403,12 @@ export async function replaceTemplateTasks(
       id,
       templateId,
       label: t.label,
+      description: t.description ?? null,
       actionType: t.actionType,
       dayOffset: t.dayOffset,
+      allDay,
+      startTime,
+      durationMinutes,
       position: i,
       actionConfig: t.actionConfig ?? null,
       createdAt: now,
@@ -381,64 +430,93 @@ export async function listTaskInstances(
   return results.map(rowToTaskInstance);
 }
 
+async function insertInstanceFromTemplateTask(
+  releaseId: string,
+  templateId: string,
+  release: Pick<Release, "name" | "description" | "releaseDate">,
+  task: ReleaseTemplateTask,
+  now: string,
+): Promise<ReleaseTaskInstance> {
+  const id = newId();
+  const dueDate = release.releaseDate
+    ? addDays(release.releaseDate, task.dayOffset)
+    : null;
+  const ctx = buildMergeContext(release, dueDate, task.dayOffset);
+  const label = renderMergeFields(task.label, ctx) ?? task.label;
+  const description = renderMergeFields(task.description, ctx);
+
+  await d1Query(
+    `INSERT INTO release_task_instances
+       (id, release_id, template_task_id, template_id, label, description,
+        action_type, day_offset, all_day, start_time, duration_minutes,
+        due_date, status, action_config, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    [
+      id,
+      releaseId,
+      task.id,
+      templateId,
+      label,
+      description,
+      task.actionType,
+      task.dayOffset,
+      task.allDay ? 1 : 0,
+      task.allDay ? null : task.startTime,
+      task.durationMinutes,
+      dueDate,
+      task.actionConfig ? JSON.stringify(task.actionConfig) : null,
+      now,
+      now,
+    ],
+  );
+
+  return {
+    id,
+    releaseId,
+    templateTaskId: task.id,
+    templateId,
+    label,
+    description,
+    actionType: task.actionType,
+    dayOffset: task.dayOffset,
+    allDay: task.allDay,
+    startTime: task.allDay ? null : task.startTime,
+    durationMinutes: task.durationMinutes,
+    dueDate,
+    status: "pending",
+    actionConfig: task.actionConfig,
+    externalId: null,
+    externalUrl: null,
+    lastDispatchError: null,
+    lastDispatchAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 /**
  * Generate task instances for a release from a matched template.
  * Skips generation if instances already exist (idempotent).
  */
 export async function generateTaskInstances(
-  releaseId: string,
+  release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
   templateId: string,
-  releaseDate: string | null
 ): Promise<ReleaseTaskInstance[]> {
   // Idempotency check
   const { results: existing } = await d1Query<{ id: string }>(
     `SELECT id FROM release_task_instances WHERE release_id = ? LIMIT 1`,
-    [releaseId]
+    [release.id]
   );
-  if (existing.length > 0) return listTaskInstances(releaseId);
+  if (existing.length > 0) return listTaskInstances(release.id);
 
   const tasks = await listTemplateTasks(templateId);
   const now = new Date().toISOString();
   const created: ReleaseTaskInstance[] = [];
 
   for (const task of tasks) {
-    const id = newId();
-    const dueDate =
-      releaseDate ? addDays(releaseDate, task.dayOffset) : null;
-
-    await d1Query(
-      `INSERT INTO release_task_instances
-         (id, release_id, template_task_id, template_id, label, action_type, day_offset, due_date, status, action_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-      [
-        id,
-        releaseId,
-        task.id,
-        templateId,
-        task.label,
-        task.actionType,
-        task.dayOffset,
-        dueDate,
-        task.actionConfig ? JSON.stringify(task.actionConfig) : null,
-        now,
-        now,
-      ]
+    created.push(
+      await insertInstanceFromTemplateTask(release.id, templateId, release, task, now),
     );
-
-    created.push({
-      id,
-      releaseId,
-      templateTaskId: task.id,
-      templateId,
-      label: task.label,
-      actionType: task.actionType,
-      dayOffset: task.dayOffset,
-      dueDate,
-      status: "pending",
-      actionConfig: task.actionConfig,
-      createdAt: now,
-      updatedAt: now,
-    });
   }
 
   return created;
@@ -449,13 +527,12 @@ export async function generateTaskInstances(
  * Used when the matched template changes or the user manually triggers regeneration.
  */
 export async function regenerateTaskInstances(
-  releaseId: string,
+  release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
   templateId: string,
-  releaseDate: string | null
 ): Promise<ReleaseTaskInstance[]> {
   await d1Query(
     `DELETE FROM release_task_instances WHERE release_id = ? AND status = 'pending'`,
-    [releaseId]
+    [release.id]
   );
 
   const tasks = await listTemplateTasks(templateId);
@@ -463,42 +540,9 @@ export async function regenerateTaskInstances(
   const created: ReleaseTaskInstance[] = [];
 
   for (const task of tasks) {
-    const id = newId();
-    const dueDate = releaseDate ? addDays(releaseDate, task.dayOffset) : null;
-
-    await d1Query(
-      `INSERT INTO release_task_instances
-         (id, release_id, template_task_id, template_id, label, action_type, day_offset, due_date, status, action_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-      [
-        id,
-        releaseId,
-        task.id,
-        templateId,
-        task.label,
-        task.actionType,
-        task.dayOffset,
-        dueDate,
-        task.actionConfig ? JSON.stringify(task.actionConfig) : null,
-        now,
-        now,
-      ]
+    created.push(
+      await insertInstanceFromTemplateTask(release.id, templateId, release, task, now),
     );
-
-    created.push({
-      id,
-      releaseId,
-      templateTaskId: task.id,
-      templateId,
-      label: task.label,
-      actionType: task.actionType,
-      dayOffset: task.dayOffset,
-      dueDate,
-      status: "pending",
-      actionConfig: task.actionConfig,
-      createdAt: now,
-      updatedAt: now,
-    });
   }
 
   return created;
@@ -545,17 +589,56 @@ export async function updateTaskInstanceStatus(
   );
 }
 
+export async function setTaskInstanceExternalRef(
+  id: string,
+  externalId: string,
+  externalUrl: string
+): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE release_task_instances
+       SET external_id = ?, external_url = ?, last_dispatch_error = NULL,
+           last_dispatch_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [externalId, externalUrl, now, now, id]
+  );
+}
+
+export async function setTaskInstanceDispatchError(
+  id: string,
+  error: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE release_task_instances
+       SET last_dispatch_error = ?, last_dispatch_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [error, now, now, id],
+  );
+}
+
+export async function setTaskInstanceDueDate(
+  id: string,
+  dueDate: string | null,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE release_task_instances
+       SET due_date = ?, updated_at = ?
+     WHERE id = ?`,
+    [dueDate, now, id],
+  );
+}
+
 /**
  * Find the matching template for a release name and generate instances if needed.
  * Safe to call on every webhook event — generateTaskInstances is idempotent.
  */
 export async function maybeGenerateInstances(
-  releaseId: string,
-  releaseName: string,
-  releaseDate: string | null
+  release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
 ): Promise<void> {
   const templates = await listTemplates();
-  const matched = matchTemplate(releaseName, templates);
+  const matched = matchTemplate(release.name, templates);
   if (!matched) return;
-  await generateTaskInstances(releaseId, matched.id, releaseDate);
+  await generateTaskInstances(release, matched.id);
 }

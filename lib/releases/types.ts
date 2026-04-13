@@ -42,8 +42,12 @@ export interface ReleaseTemplateTask {
   id: string;
   templateId: string;
   label: string;
+  description: string | null;
   actionType: ActionType;
   dayOffset: number;
+  allDay: boolean;
+  startTime: string | null; // "HH:MM" — null when allDay
+  durationMinutes: number;
   position: number;
   actionConfig: Record<string, unknown> | null;
   createdAt: string;
@@ -56,11 +60,19 @@ export interface ReleaseTaskInstance {
   templateTaskId: string;
   templateId: string;
   label: string;
+  description: string | null;
   actionType: ActionType;
   dayOffset: number;
+  allDay: boolean;
+  startTime: string | null;
+  durationMinutes: number;
   dueDate: string | null;
   status: TaskInstanceStatus;
   actionConfig: Record<string, unknown> | null;
+  externalId: string | null;
+  externalUrl: string | null;
+  lastDispatchError: string | null;
+  lastDispatchAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
