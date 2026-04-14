@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { cn } from "@/lib/utils";
@@ -16,11 +15,8 @@ export function AppTopBar({
   actions?: React.ReactNode;
   className?: string;
 }) {
-  const router = useRouter();
-
-  const handleLogout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/login");
+  const handleLogout = () => {
+    window.location.href = "/cdn-cgi/access/logout";
   };
 
   return (
