@@ -40,13 +40,29 @@ export type ReleaseEventType =
   | "release.released"
   | "task.failed";
 
+export interface NotificationButton {
+  /** Button label shown in Slack. Supports merge fields. */
+  label: string;
+  /** Link URL opened on click. Supports merge fields (e.g. {{release.id}}). */
+  url: string;
+}
+
 export interface ReleaseNotification {
   id: string;
   templateId: string;
   eventType: ReleaseEventType;
   message: string;
-  /** Overrides the global webhook URL. Null = use DashboardConfig.slackWebhookUrl. */
-  webhookUrl: string | null;
+  /**
+   * Slack destination: a channel ID (C…, G…) or user ID (U…) for DMs. Posted
+   * via chat.postMessage with the server's SLACK_BOT_TOKEN. Null = rule
+   * incomplete; fire-time logs a warning and skips.
+   */
+  target: string | null;
+  /**
+   * Optional CTA buttons rendered as a Slack actions block below the message.
+   * Empty array = plain text message. Slack caps this at 5 buttons per block.
+   */
+  buttons: NotificationButton[];
   position: number;
   createdAt: string;
   updatedAt: string;

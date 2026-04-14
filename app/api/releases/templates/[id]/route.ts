@@ -59,7 +59,8 @@ export async function PUT(
       notifications?: Array<{
         eventType: ReleaseEventType;
         message: string;
-        webhookUrl?: string | null;
+        target?: string | null;
+        buttons?: Array<{ label: string; url: string }>;
       }>;
     };
 

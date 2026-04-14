@@ -1,13 +1,14 @@
 /**
  * Event-driven notification firing for release templates.
  *
- * Unlike the dispatcher (which creates Google resources on a schedule), this
- * runs synchronously in response to a lifecycle event: release created, date
+ * Runs synchronously in response to a lifecycle event: release created, date
  * changed, released, or task dispatch failure. Each fire is best-effort — we
- * swallow errors so a flaky Slack webhook can't crash the caller's flow.
+ * swallow errors so a flaky Slack call can't crash the caller's flow.
+ *
+ * Posts via Slack `chat.postMessage` with a bot token (SLACK_BOT_TOKEN env).
+ * A rule's `target` is a channel ID (C…, G…) or user ID (U…) for a DM.
  */
 
-import { getConfig } from "@/lib/config";
 import { listTemplates } from "./templates-store";
 import { listNotificationsForEvent } from "./notifications-store";
 import { matchTemplate } from "./matcher";
@@ -16,7 +17,8 @@ import {
   renderMergeFields,
   type EventContextOverride,
 } from "./merge-fields";
-import { sendSlackWebhook, type SlackWebhookPayload } from "@/lib/slack/client";
+import { hasSlackBotToken, postSlackMessage } from "@/lib/slack/client";
+import { buildSlackMessage } from "./notification-blocks";
 import type { Release, ReleaseEventType } from "./types";
 
 export interface FireEventOptions {
@@ -26,9 +28,14 @@ export interface FireEventOptions {
   event?: EventContextOverride;
 }
 
+/** Slack target IDs: channel (C/G), DM (D), or user (U). Anything else skipped. */
+function isValidTarget(target: string): boolean {
+  return /^[CGDU][A-Z0-9]{5,}$/.test(target);
+}
+
 /**
  * Match the release against a template, look up notification rules for the
- * given event, and POST each to its configured webhook.
+ * given event, and post each via chat.postMessage.
  *
  * Never throws — per-rule failures log to console so the calling webhook/handler
  * flow proceeds uninterrupted.
@@ -37,6 +44,13 @@ export async function fireReleaseEvent(opts: FireEventOptions): Promise<void> {
   const { release, eventType, event } = opts;
 
   try {
+    if (!hasSlackBotToken()) {
+      console.warn(
+        `[notifications] ${eventType} skipped — SLACK_BOT_TOKEN not set`,
+      );
+      return;
+    }
+
     const templates = await listTemplates();
     const matched = matchTemplate(release.name, templates);
     if (!matched) return;
@@ -44,43 +58,31 @@ export async function fireReleaseEvent(opts: FireEventOptions): Promise<void> {
     const rules = await listNotificationsForEvent(matched.id, eventType);
     if (rules.length === 0) return;
 
-    const config = await getConfig().catch(() => null);
-    const globalWebhook = config?.slackWebhookUrl?.trim() || null;
-
     const ctx = buildMergeContext(release, null, 0, event);
     const renderedMessage = (msg: string) =>
       renderMergeFields(msg, ctx) ?? msg;
 
-    // Flat payload — Workflow Builder's webhook schema only supports top-level
-    // string/number/boolean keys.
-    const basePayload: Omit<SlackWebhookPayload, "text"> = {
-      event: eventType,
-      release_id: ctx.release.id,
-      release_name: ctx.release.name,
-      release_platform: ctx.release.platform,
-      release_version: ctx.release.version,
-      release_type: ctx.release.releaseType,
-      release_date: ctx.release.date,
-      release_description: ctx.release.description,
-      event_old_date: ctx.event.oldDate,
-      event_new_date: ctx.event.newDate,
-      event_task_label: ctx.event.taskLabel,
-      event_error: ctx.event.error,
-    };
-
     for (const rule of rules) {
-      const url = rule.webhookUrl?.trim() || globalWebhook;
-      if (!url) {
+      const target = rule.target?.trim();
+      if (!target) {
         console.warn(
-          `[notifications] ${eventType} rule ${rule.id} has no webhook URL (no override, no global) — skipping`,
+          `[notifications] ${eventType} rule ${rule.id} has no target — skipping`,
+        );
+        continue;
+      }
+      if (!isValidTarget(target)) {
+        console.warn(
+          `[notifications] ${eventType} rule ${rule.id} target ${target} is not a valid Slack channel/user ID — skipping`,
         );
         continue;
       }
       try {
-        await sendSlackWebhook(url, {
-          ...basePayload,
+        const payload = buildSlackMessage({
           text: renderedMessage(rule.message),
+          buttons: rule.buttons,
+          ctx,
         });
+        await postSlackMessage({ channel: target, ...payload });
       } catch (e) {
         console.warn(
           `[notifications] ${eventType} rule ${rule.id} failed`,

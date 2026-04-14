@@ -15,6 +15,7 @@ import {
   X,
   Bell,
 } from "lucide-react";
+import { SlackTargetPicker } from "@/components/releases/SlackTargetPicker";
 import {
   GoogleTasksIcon,
   GoogleCalendarIcon,
@@ -51,9 +52,14 @@ import {
   MergeFieldPicker,
   insertTokenAt,
 } from "@/components/releases/MergeFieldPicker";
+import {
+  buildSampleMergeContext,
+  renderMergeFields,
+} from "@/lib/releases/merge-fields";
 import { cn } from "@/lib/utils";
 import type {
   ActionType,
+  NotificationButton,
   ReleaseEventType,
   ReleaseNotification,
   ReleaseTemplate,
@@ -127,19 +133,34 @@ const EVENT_OPTIONS: Array<{ value: ReleaseEventType; label: string; hint: strin
   { value: "task.failed",          label: "Task failed",        hint: "When a Google Task/Calendar dispatch errors" },
 ];
 
+interface DraftButton {
+  _key: string;
+  label: string;
+  url: string;
+}
+
 interface DraftNotification {
   _key: string;
   eventType: ReleaseEventType;
   message: string;
-  webhookUrl: string;  // empty = use global
+  /** Slack channel ID (C…/G…) or user ID (U…). Empty = unset. */
+  target: string;
+  buttons: DraftButton[];
 }
+
+const MAX_BUTTONS = 5;
 
 function notificationToRow(n: ReleaseNotification): DraftNotification {
   return {
     _key: newKey(),
     eventType: n.eventType,
     message: n.message,
-    webhookUrl: n.webhookUrl ?? "",
+    target: n.target ?? "",
+    buttons: (n.buttons ?? []).map((b) => ({
+      _key: newKey(),
+      label: b.label,
+      url: b.url,
+    })),
   };
 }
 
@@ -148,8 +169,19 @@ function freshNotification(): DraftNotification {
     _key: newKey(),
     eventType: "release.created",
     message: "",
-    webhookUrl: "",
+    target: "",
+    buttons: [],
   };
+}
+
+function freshButton(): DraftButton {
+  return { _key: newKey(), label: "", url: "" };
+}
+
+function draftButtonsToApi(buttons: DraftButton[]): NotificationButton[] {
+  return buttons
+    .map((b) => ({ label: b.label.trim(), url: b.url.trim() }))
+    .filter((b) => b.label && b.url);
 }
 
 interface DraftTask {
@@ -363,6 +395,16 @@ function SortableTaskRow({
   const isGoogleTask = task.actionType === "google_task";
   const isCalendarEvent = task.actionType === "calendar_event";
   const isLegacyManual = task.actionType === "manual";
+
+  // Preview tokens using a sample release; pass this row's dayOffset so
+  // {{task.dueDate}} previews at the right relative date.
+  const sampleCtx = buildSampleMergeContext({ dayOffset: task.dayOffset });
+  const labelPreview = task.label.includes("{{")
+    ? renderMergeFields(task.label, sampleCtx) ?? ""
+    : "";
+  const descPreview = task.description.includes("{{")
+    ? renderMergeFields(task.description, sampleCtx) ?? ""
+    : "";
   const direction = offsetToDirection(task.dayOffset);
   const daysAbs = Math.abs(task.dayOffset);
 
@@ -471,6 +513,12 @@ function SortableTaskRow({
             />
             <MergeFieldPicker onInsert={insertToLabel} />
           </div>
+          {labelPreview && (
+            <div className="text-xxs text-muted-foreground truncate">
+              <span className="opacity-70">Preview:</span>{" "}
+              <span className="text-foreground/80">{labelPreview}</span>
+            </div>
+          )}
         </div>
 
         {/* Description */}
@@ -493,6 +541,16 @@ function SortableTaskRow({
             />
             <MergeFieldPicker onInsert={insertToDesc} />
           </div>
+          {descPreview && (
+            <div className="rounded-md border border-dashed bg-muted/30 px-2.5 py-1.5 text-xxs">
+              <div className="uppercase tracking-wide text-muted-foreground/80 mb-0.5">
+                Preview — sample release
+              </div>
+              <div className="whitespace-pre-wrap break-words text-foreground/80">
+                {descPreview}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* When */}
@@ -685,12 +743,10 @@ function SortableTaskRow({
 
 function NotificationRow({
   notification,
-  globalWebhookUrl,
   onChange,
   onDelete,
 }: {
   notification: DraftNotification;
-  globalWebhookUrl: string | null;
   onChange: (updated: DraftNotification) => void;
   onDelete: () => void;
 }) {
@@ -705,8 +761,42 @@ function NotificationRow({
     restoreCaret();
   };
 
-  const usingGlobal = !notification.webhookUrl.trim();
-  const globalMissing = usingGlobal && !globalWebhookUrl;
+  const targetMissing = !notification.target.trim();
+
+  const previewText = (() => {
+    if (!notification.message.trim()) return "";
+    const ctx = buildSampleMergeContext();
+    return renderMergeFields(notification.message, ctx) ?? notification.message;
+  })();
+
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<
+    { ok: true } | { ok: false; error: string } | null
+  >(null);
+
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch("/api/releases/notifications/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventType: notification.eventType,
+          message: notification.message,
+          target: notification.target.trim() || null,
+          buttons: draftButtonsToApi(notification.buttons),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) setTestResult({ ok: true });
+      else setTestResult({ ok: false, error: data.error || "Test failed" });
+    } catch (e) {
+      setTestResult({ ok: false, error: (e as Error).message });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   return (
     <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
@@ -763,6 +853,105 @@ function NotificationRow({
               eventType={notification.eventType}
             />
           </div>
+          {previewText && (
+            <div className="rounded-md border border-dashed bg-muted/30 px-2.5 py-1.5 text-xs space-y-0.5">
+              <div className="text-xxs uppercase tracking-wide text-muted-foreground/80">
+                Preview — sample release
+              </div>
+              <div className="whitespace-pre-wrap break-words text-foreground/90">
+                {previewText}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-1.5 border-t border-dashed pt-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
+              Buttons
+            </Label>
+            <span className="text-xxs text-muted-foreground">
+              {notification.buttons.length}/{MAX_BUTTONS} · merge fields OK
+            </span>
+          </div>
+          {notification.buttons.length === 0 ? (
+            <p className="text-xxs text-muted-foreground">
+              Optional CTA buttons rendered below the message in Slack.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {notification.buttons.map((btn, idx) => (
+                <div
+                  key={btn._key}
+                  className="grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)_auto] items-center gap-2"
+                >
+                  <input
+                    type="text"
+                    value={btn.label}
+                    onChange={(e) =>
+                      onChange({
+                        ...notification,
+                        buttons: notification.buttons.map((b, i) =>
+                          i === idx ? { ...b, label: e.target.value } : b,
+                        ),
+                      })
+                    }
+                    placeholder="View in Jira"
+                    className={cn(INPUT_CLASS, "h-8 text-xs")}
+                  />
+                  <input
+                    type="url"
+                    value={btn.url}
+                    onChange={(e) =>
+                      onChange({
+                        ...notification,
+                        buttons: notification.buttons.map((b, i) =>
+                          i === idx ? { ...b, url: e.target.value } : b,
+                        ),
+                      })
+                    }
+                    placeholder="https://…/{{release.id}}"
+                    className={cn(INPUT_CLASS, "h-8 text-xs font-mono")}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChange({
+                        ...notification,
+                        buttons: notification.buttons.filter(
+                          (_, i) => i !== idx,
+                        ),
+                      })
+                    }
+                    className="text-muted-foreground hover:text-destructive h-8 w-8 inline-flex items-center justify-center rounded-md hover:bg-destructive/10 transition-colors"
+                    aria-label="Remove button"
+                    title="Remove button"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {notification.buttons.length < MAX_BUTTONS && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1.5"
+              onClick={() =>
+                onChange({
+                  ...notification,
+                  buttons: [...notification.buttons, freshButton()],
+                })
+              }
+            >
+              <Plus className="h-3 w-3" />
+              Add button
+            </Button>
+          )}
         </div>
 
         <div className="space-y-1.5 border-t border-dashed pt-3">
@@ -770,36 +959,58 @@ function NotificationRow({
             Delivery
           </Label>
           <div className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-2">
-            <span className="text-xs text-muted-foreground">Webhook</span>
-            <input
-              type="url"
-              value={notification.webhookUrl}
-              onChange={(e) =>
-                onChange({ ...notification, webhookUrl: e.target.value })
-              }
-              placeholder={
-                globalWebhookUrl
-                  ? `Using global — ${globalWebhookUrl.slice(0, 48)}${globalWebhookUrl.length > 48 ? "…" : ""}`
-                  : "Paste a Slack webhook URL (global not set)"
-              }
-              className={cn(INPUT_CLASS, "h-8 text-xs font-mono")}
-              autoComplete="off"
-              spellCheck={false}
+            <span className="text-xs text-muted-foreground">Send to</span>
+            <SlackTargetPicker
+              value={notification.target}
+              onChange={(id) => onChange({ ...notification, target: id })}
             />
             <span />
-            {globalMissing ? (
+            {targetMissing ? (
               <p className="text-xxs text-amber-700 dark:text-amber-400 inline-flex items-center gap-1">
                 <AlertTriangle className="h-3 w-3" />
-                No global webhook — set one in{" "}
-                <Link href="/settings" className="underline">Settings</Link>{" "}
-                or paste a URL here.
+                Pick a channel or person to send this event to.
               </p>
             ) : (
               <p className="text-xxs text-muted-foreground">
-                Leave blank to use the global URL from Settings. Paste a different
-                URL to route this rule to another channel/workflow.
+                Posts via Slack <code className="bg-muted px-1 rounded">chat.postMessage</code> using the server&apos;s bot token.
               </p>
             )}
+
+            <span />
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1.5"
+                onClick={handleTest}
+                disabled={
+                  testing || targetMissing || !notification.message.trim()
+                }
+              >
+                {testing ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Bell className="h-3 w-3" />
+                )}
+                Send test
+              </Button>
+              {testResult?.ok === true && (
+                <span className="text-xxs text-green-600 dark:text-green-500">
+                  Sent — check Slack
+                </span>
+              )}
+              {testResult && testResult.ok === false && (
+                <span className="text-xxs text-destructive">
+                  {testResult.error}
+                </span>
+              )}
+              {!testResult && (
+                <span className="text-xxs text-muted-foreground">
+                  Fires with sample data, prefixed <code className="bg-muted px-1 rounded">[TEST]</code>
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -823,7 +1034,6 @@ export default function TemplateEditorPage() {
   const [releaseTypes, setReleaseTypes] = useState<ReleaseType[]>([]);
   const [tasks, setTasks] = useState<DraftTask[]>([]);
   const [notifications, setNotifications] = useState<DraftNotification[]>([]);
-  const [globalWebhookUrl, setGlobalWebhookUrl] = useState<string | null>(null);
 
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
   const [calendars, setCalendars] = useState<CalendarListEntry[]>([]);
@@ -849,14 +1059,6 @@ export default function TemplateEditorPage() {
         );
       })
       .finally(() => setLoading(false));
-
-    fetch("/api/config")
-      .then((r) => r.json())
-      .then((data) => {
-        const url = (data?.config?.slackWebhookUrl as string | undefined)?.trim();
-        setGlobalWebhookUrl(url && url.length > 0 ? url : null);
-      })
-      .catch(() => setGlobalWebhookUrl(null));
 
     Promise.all([
       fetch("/api/google/task-lists").then(async (r) => ({ r, d: await r.json() })),
@@ -919,7 +1121,8 @@ export default function TemplateEditorPage() {
         notifications: notifications.map((n) => ({
           eventType: n.eventType,
           message: n.message,
-          webhookUrl: n.webhookUrl.trim() || null,
+          target: n.target.trim() || null,
+          buttons: draftButtonsToApi(n.buttons),
         })),
       }),
     });
@@ -1169,7 +1372,6 @@ export default function TemplateEditorPage() {
                 <NotificationRow
                   key={n._key}
                   notification={n}
-                  globalWebhookUrl={globalWebhookUrl}
                   onChange={(updated) =>
                     setNotifications((prev) =>
                       prev.map((x) => (x._key === updated._key ? updated : x)),

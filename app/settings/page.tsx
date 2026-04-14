@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { CheckCircle2, XCircle, Loader2, Save, LogOut } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, Save, LogOut, Send } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -19,8 +19,16 @@ interface ConfigStatus {
     boardId?: string;
     standupTime?: string;
     standupTimezone?: string;
-    slackWebhookUrl?: string;
   } | null;
+}
+
+interface SlackAuthStatus {
+  ok: boolean;
+  configured: boolean;
+  team?: string;
+  user?: string;
+  url?: string;
+  error?: string;
 }
 
 interface GoogleStatus {
@@ -47,7 +55,9 @@ export default function SettingsPage() {
   const [boardId, setBoardId] = useState("");
   const [standupTime, setStandupTime] = useState("09:00");
   const [standupTimezone, setStandupTimezone] = useState("");
-  const [slackWebhookUrl, setSlackWebhookUrl] = useState("");
+
+  const [slackAuth, setSlackAuth] = useState<SlackAuthStatus | null>(null);
+  const [slackTesting, setSlackTesting] = useState(false);
 
   const loadGoogleStatus = useCallback(() => {
     fetch("/api/google/status")
@@ -82,7 +92,6 @@ export default function SettingsPage() {
           setBoardId(data.config.boardId || "");
           setStandupTime(data.config.standupTime || "09:00");
           setStandupTimezone(data.config.standupTimezone || "");
-          setSlackWebhookUrl(data.config.slackWebhookUrl || "");
         }
       })
       .catch(() => {})
@@ -108,7 +117,6 @@ export default function SettingsPage() {
           ...(boardId.trim() ? { boardId: boardId.trim() } : {}),
           ...(standupTime ? { standupTime } : {}),
           ...(standupTimezone.trim() ? { standupTimezone: standupTimezone.trim() } : {}),
-          ...(slackWebhookUrl.trim() ? { slackWebhookUrl: slackWebhookUrl.trim() } : {}),
         }),
       });
       if (res.ok) setSaved(true);
@@ -118,6 +126,28 @@ export default function SettingsPage() {
       setSaving(false);
     }
   };
+
+  const handleSlackTest = useCallback(async () => {
+    setSlackTesting(true);
+    try {
+      const res = await fetch("/api/slack/auth-test");
+      const data = (await res.json()) as SlackAuthStatus;
+      setSlackAuth(data);
+    } catch (e) {
+      setSlackAuth({
+        ok: false,
+        configured: true,
+        error: (e as Error).message,
+      });
+    } finally {
+      setSlackTesting(false);
+    }
+  }, []);
+
+  // Auto-check Slack connection once on mount so the status line isn't blank.
+  useEffect(() => {
+    handleSlackTest();
+  }, [handleSlackTest]);
 
   const handleGoogleDisconnect = async () => {
     setGoogleDisconnecting(true);
@@ -378,26 +408,60 @@ export default function SettingsPage() {
             Slack Notifications
           </h2>
           <div className="rounded-lg border p-4 space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="slackWebhook" className="text-xs">
-                Default webhook URL
-              </Label>
-              <Input
-                id="slackWebhook"
-                type="url"
-                value={slackWebhookUrl}
-                onChange={(e) => setSlackWebhookUrl(e.target.value)}
-                placeholder="https://hooks.slack.com/…  or  Workflow Builder URL"
-                className="text-xs font-mono"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <p className="text-xxs text-muted-foreground">
-                Used by notification rules that don&apos;t specify their own URL.
-                Each template&apos;s <span className="font-medium">Notifications</span> section can
-                override this per rule for routing events to different channels.
-              </p>
+            <div className="flex items-center gap-2 text-sm">
+              {slackAuth === null || slackTesting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  <span className="text-muted-foreground">Checking Slack connection…</span>
+                </>
+              ) : slackAuth.ok ? (
+                <>
+                  <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  <span>
+                    Connected to <span className="font-medium">{slackAuth.team}</span> as{" "}
+                    <span className="font-medium">{slackAuth.user}</span>
+                  </span>
+                </>
+              ) : !slackAuth.configured ? (
+                <>
+                  <XCircle className="h-4 w-4 text-amber-500" />
+                  <span>
+                    <span className="font-medium">SLACK_BOT_TOKEN</span> is not set on the server.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <XCircle className="h-4 w-4 text-destructive" />
+                  <span>Slack auth failed: {slackAuth.error}</span>
+                </>
+              )}
             </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1.5"
+                onClick={handleSlackTest}
+                disabled={slackTesting}
+              >
+                {slackTesting ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Send className="h-3 w-3" />
+                )}
+                Test connection
+              </Button>
+            </div>
+
+            <p className="text-xxs text-muted-foreground leading-relaxed">
+              The bot token lives server-side only (env var <code className="bg-muted px-1 rounded">SLACK_BOT_TOKEN</code>) —
+              it is never sent to the browser. Required scopes:{" "}
+              <code className="bg-muted px-1 rounded">chat:write</code>,{" "}
+              <code className="bg-muted px-1 rounded">channels:read</code>,{" "}
+              <code className="bg-muted px-1 rounded">users:read</code>.
+              Rotate by regenerating in the Slack app&apos;s OAuth &amp; Permissions page and updating the env var.
+            </p>
           </div>
         </section>
 

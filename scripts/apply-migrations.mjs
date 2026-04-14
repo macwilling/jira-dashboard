@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * One-shot: apply any missing additive migrations (0003-0007) to the remote D1.
+ * One-shot: apply any missing additive migrations (0003-0009) to the remote D1.
  * Idempotent — checks PRAGMA table_info before each ALTER so it's safe to rerun.
  *
  * Run: node --env-file=.env.local scripts/apply-migrations.mjs
@@ -113,6 +113,20 @@ async function main() {
       ON release_template_notifications(template_id, position)
   `);
   console.log("  ✓ idx_template_notifications_template ensured");
+
+  console.log("0008 — rename release_template_notifications.webhook_url → target");
+  const notifCols = await columns("release_template_notifications");
+  if (notifCols.has("target")) {
+    console.log("  · target already present");
+  } else if (notifCols.has("webhook_url")) {
+    await d1(`ALTER TABLE release_template_notifications RENAME COLUMN webhook_url TO target`);
+    console.log("  ✓ renamed webhook_url → target");
+  } else {
+    console.log("  · neither webhook_url nor target present — skipping");
+  }
+
+  console.log("0009 — release_template_notifications.buttons (JSON)");
+  await addColumnIfMissing("release_template_notifications", "buttons", "TEXT");
 
   console.log("\nDone.");
 }

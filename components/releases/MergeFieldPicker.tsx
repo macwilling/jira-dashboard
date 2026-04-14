@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { Zap } from "lucide-react";
 import {
   DropdownMenu,
@@ -13,6 +14,8 @@ import {
 import {
   MERGE_FIELDS,
   EVENT_MERGE_FIELDS,
+  buildSampleMergeContext,
+  renderMergeFields,
   type MergeFieldDef,
 } from "@/lib/releases/merge-fields";
 import type { ReleaseEventType } from "@/lib/releases/types";
@@ -47,6 +50,10 @@ export function MergeFieldPicker({ onInsert, className, eventType }: Props) {
     ? ["Release", "Event"]
     : ["Release", "Task"];
 
+  const sampleCtx = useMemo(() => buildSampleMergeContext(), []);
+  const sampleValue = (token: string) =>
+    (renderMergeFields(token, sampleCtx) ?? "").trim() || "(empty)";
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -59,7 +66,7 @@ export function MergeFieldPicker({ onInsert, className, eventType }: Props) {
       >
         <Zap className="h-3 w-3" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-[280px]">
+      <DropdownMenuContent align="end" className="min-w-[340px]">
         {groupOrder.map((group, i) => (
           <DropdownMenuGroup key={group}>
             {i > 0 && <DropdownMenuSeparator />}
@@ -70,10 +77,17 @@ export function MergeFieldPicker({ onInsert, className, eventType }: Props) {
                 onClick={() => onInsert(f.token)}
                 className="gap-3"
               >
-                <span className="flex-1">{f.label}</span>
-                <code className="text-xxs font-mono text-muted-foreground">
-                  {f.token}
-                </code>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="truncate">{f.label}</span>
+                    <code className="text-xxs font-mono text-muted-foreground shrink-0">
+                      {f.token}
+                    </code>
+                  </div>
+                  <div className="text-xxs text-foreground/60 font-mono truncate mt-0.5">
+                    → {sampleValue(f.token)}
+                  </div>
+                </div>
               </DropdownMenuItem>
             ))}
           </DropdownMenuGroup>

@@ -11,7 +11,7 @@
  * bucket is only populated in that path, and varies per event type.
  */
 
-import { parseReleaseName } from "./matcher";
+import { addDays, parseReleaseName } from "./matcher";
 import type { Release, ReleaseEventType } from "./types";
 
 export interface MergeFieldDef {
@@ -121,6 +121,37 @@ export function buildMergeContext(
       error: event?.error ?? "",
     },
   };
+}
+
+const SAMPLE_RELEASE = {
+  id: "13673",
+  name: "web@1.2.0",
+  description: "Sample release — payment gateway upgrade",
+  releaseDate: "2026-05-01",
+};
+
+export interface SampleContextOverrides {
+  /** Defaults to -3; pass the actual row's offset for a more accurate preview. */
+  dayOffset?: number;
+}
+
+/**
+ * Sample context used for previews / test messages. Every bucket populated so
+ * any token has a visible value, regardless of whether it would actually be
+ * set for a given event type at fire time. Pass `dayOffset` to make the
+ * computed `task.dueDate` match the row being previewed.
+ */
+export function buildSampleMergeContext(
+  overrides?: SampleContextOverrides,
+): MergeContext {
+  const dayOffset = overrides?.dayOffset ?? -3;
+  const dueDate = addDays(SAMPLE_RELEASE.releaseDate, dayOffset);
+  return buildMergeContext(SAMPLE_RELEASE, dueDate, dayOffset, {
+    oldDate: "2026-04-25",
+    newDate: "2026-05-01",
+    taskLabel: "Deploy web@1.2.0",
+    error: "Google auth expired — reconnect in Settings",
+  });
 }
 
 /**
