@@ -32,8 +32,10 @@ export type TaskInstanceStatus = "pending" | "done" | "skipped";
 export interface ReleaseTemplate {
   id: string;
   name: string;
-  platformPrefix: string | null;
-  releaseType: ReleaseType | null;
+  /** Null or empty = matches any platform. */
+  platformPrefixes: string[] | null;
+  /** Null or empty = matches any release type. */
+  releaseTypes: ReleaseType[] | null;
   priority: number;
   createdAt: string;
   updatedAt: string;

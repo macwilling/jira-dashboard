@@ -16,8 +16,10 @@ import type {
 interface TemplateRow {
   id: string;
   name: string;
-  platform_prefix: string | null;
-  release_type: string | null;
+  platform_prefix: string | null;   // legacy single-value column, kept for safety
+  release_type: string | null;      // legacy single-value column, kept for safety
+  platform_prefixes: string | null; // JSON array, e.g. '["web","android"]'
+  release_types: string | null;     // JSON array, e.g. '["minor","major"]'
   priority: number;
   created_at: string;
   updated_at: string;
@@ -64,12 +66,33 @@ interface TaskInstanceRow {
 
 // ─── Mappers ───────────────────────────────────────────────────────────────────
 
+function parseJsonStringArray(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const filtered = parsed.filter((v): v is string => typeof v === "string" && v.length > 0);
+    return filtered.length > 0 ? filtered : null;
+  } catch {
+    return null;
+  }
+}
+
 function rowToTemplate(row: TemplateRow): ReleaseTemplate {
+  // Prefer the new JSON array columns; fall back to legacy single-value columns
+  // for rows that existed before migration 0006 ran.
+  const platformPrefixes =
+    parseJsonStringArray(row.platform_prefixes) ??
+    (row.platform_prefix ? [row.platform_prefix] : null);
+  const releaseTypes =
+    (parseJsonStringArray(row.release_types) as ReleaseType[] | null) ??
+    (row.release_type ? [row.release_type as ReleaseType] : null);
+
   return {
     id: row.id,
     name: row.name,
-    platformPrefix: row.platform_prefix,
-    releaseType: (row.release_type as ReleaseType) ?? null,
+    platformPrefixes,
+    releaseTypes,
     priority: row.priority,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -156,10 +179,16 @@ export async function getTemplate(id: string): Promise<ReleaseTemplate | null> {
   return results[0] ? rowToTemplate(results[0]) : null;
 }
 
+function serializeConditionList(values: string[] | null | undefined): string | null {
+  if (!values) return null;
+  const cleaned = values.map((v) => v.trim()).filter((v) => v.length > 0);
+  return cleaned.length > 0 ? JSON.stringify(cleaned) : null;
+}
+
 export async function createTemplate(data: {
   name: string;
-  platformPrefix?: string | null;
-  releaseType?: ReleaseType | null;
+  platformPrefixes?: string[] | null;
+  releaseTypes?: ReleaseType[] | null;
 }): Promise<ReleaseTemplate> {
   // Place new template at the end (max priority + 1)
   const { results: maxResult } = await d1Query<{ max_p: number | null }>(
@@ -170,26 +199,21 @@ export async function createTemplate(data: {
 
   const id = newId();
   const now = new Date().toISOString();
+  const platformJson = serializeConditionList(data.platformPrefixes);
+  const typesJson = serializeConditionList(data.releaseTypes ?? null);
 
   await d1Query(
-    `INSERT INTO release_templates (id, name, platform_prefix, release_type, priority, created_at, updated_at)
+    `INSERT INTO release_templates
+       (id, name, platform_prefixes, release_types, priority, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      data.name,
-      data.platformPrefix ?? null,
-      data.releaseType ?? null,
-      priority,
-      now,
-      now,
-    ]
+    [id, data.name, platformJson, typesJson, priority, now, now],
   );
 
   return {
     id,
     name: data.name,
-    platformPrefix: data.platformPrefix ?? null,
-    releaseType: data.releaseType ?? null,
+    platformPrefixes: platformJson ? (JSON.parse(platformJson) as string[]) : null,
+    releaseTypes: typesJson ? (JSON.parse(typesJson) as ReleaseType[]) : null,
     priority,
     createdAt: now,
     updatedAt: now,
@@ -200,8 +224,8 @@ export async function updateTemplate(
   id: string,
   data: {
     name?: string;
-    platformPrefix?: string | null;
-    releaseType?: ReleaseType | null;
+    platformPrefixes?: string[] | null;
+    releaseTypes?: ReleaseType[] | null;
   }
 ): Promise<void> {
   const now = new Date().toISOString();
@@ -212,13 +236,16 @@ export async function updateTemplate(
     fields.push("name = ?");
     params.push(data.name);
   }
-  if ("platformPrefix" in data) {
-    fields.push("platform_prefix = ?");
-    params.push(data.platformPrefix ?? null);
+  if ("platformPrefixes" in data) {
+    fields.push("platform_prefixes = ?");
+    params.push(serializeConditionList(data.platformPrefixes));
+    // Null out the legacy column so it can't silently override the new list on read.
+    fields.push("platform_prefix = NULL");
   }
-  if ("releaseType" in data) {
-    fields.push("release_type = ?");
-    params.push(data.releaseType ?? null);
+  if ("releaseTypes" in data) {
+    fields.push("release_types = ?");
+    params.push(serializeConditionList(data.releaseTypes ?? null));
+    fields.push("release_type = NULL");
   }
 
   params.push(id);

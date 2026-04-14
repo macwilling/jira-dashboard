@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -12,7 +12,12 @@ import {
   Copy,
   AlertTriangle,
   Info,
+  X,
 } from "lucide-react";
+import {
+  GoogleTasksIcon,
+  GoogleCalendarIcon,
+} from "@/components/releases/GoogleIcons";
 import { AppShell } from "@/components/app-shell/AppShell";
 import {
   DndContext,
@@ -54,22 +59,28 @@ import type {
 } from "@/lib/releases/types";
 import type { TaskList, CalendarListEntry } from "@/lib/google/client";
 
-// Slack dispatch isn't implemented yet. We keep it in the type union but
-// hide it from the picker so users can't create new slack rows. Existing
-// rows with slack_message still render and display a "not yet supported" hint.
-const ACTION_PICKER_TYPES: ActionType[] = ["manual", "google_task", "calendar_event"];
+// Tasks in the editor can only be Google Tasks or Calendar Events now. Legacy
+// "manual" / "slack_message" rows still render (read-only picker won't offer
+// those options) but new rows default to google_task.
 const ACTION_LABELS: Record<ActionType, string> = {
   manual: "Manual",
   google_task: "Google Task",
-  calendar_event: "Calendar Event",
+  calendar_event: "Calendar event",
   slack_message: "Slack (coming soon)",
 };
-const RELEASE_TYPES: Array<{ value: ReleaseType | ""; label: string }> = [
-  { value: "", label: "Any" },
-  { value: "major", label: "Major (x.0.0)" },
-  { value: "minor", label: "Minor (x.y.0)" },
-  { value: "patch", label: "Patch (x.y.z)" },
+const RELEASE_TYPE_OPTIONS: Array<{ value: ReleaseType; label: string; hint: string }> = [
+  { value: "major", label: "Major", hint: "x.0.0" },
+  { value: "minor", label: "Minor", hint: "x.y.0" },
+  { value: "patch", label: "Patch", hint: "x.y.z" },
 ];
+const DEFAULT_PLATFORM_SUGGESTIONS = ["web", "android", "ios", "backend"];
+
+type OffsetDirection = "before" | "on" | "after";
+function offsetToDirection(offset: number): OffsetDirection {
+  if (offset < 0) return "before";
+  if (offset > 0) return "after";
+  return "on";
+}
 
 const INPUT_CLASS =
   "h-8 w-full min-w-0 rounded-md border border-input bg-transparent px-2.5 text-sm transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50";
@@ -78,12 +89,32 @@ const TEXTAREA_CLASS =
 const SELECT_CLASS =
   "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
-function relativeDayLabel(offset: number): string {
-  if (offset === 0) return "release day";
-  if (offset === -1) return "1 day before release";
-  if (offset === 1) return "1 day after release";
-  if (offset < 0) return `${Math.abs(offset)} days before release`;
-  return `${offset} days after release`;
+function ActionPickerButton({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 h-9 px-3 text-sm font-medium transition-all",
+        active
+          ? "bg-background text-foreground shadow-sm"
+          : "bg-transparent text-muted-foreground hover:text-foreground",
+      )}
+    >
+      <span className={cn("shrink-0", !active && "grayscale opacity-50")}>{icon}</span>
+      {label}
+    </button>
+  );
 }
 
 interface DraftTask {
@@ -125,7 +156,7 @@ function freshTask(): DraftTask {
     _key: newKey(),
     label: "",
     description: "",
-    actionType: "manual",
+    actionType: "google_task",
     dayOffset: 0,
     allDay: true,
     startTime: "09:00",
@@ -133,6 +164,121 @@ function freshTask(): DraftTask {
     taskListId: "@default",
     calendarId: "primary",
   };
+}
+
+/**
+ * Pill-based platform selector. Presets render as toggleable chips; user can
+ * add custom values via a + Add button that reveals an inline input. Matches
+ * the visual language of the Release-types checkboxes below it.
+ */
+function PlatformChipInput({
+  values,
+  onChange,
+}: {
+  values: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const addRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (adding) addRef.current?.focus();
+  }, [adding]);
+
+  const commitDraft = () => {
+    const v = draft.trim().toLowerCase();
+    setDraft("");
+    setAdding(false);
+    if (!v || values.includes(v)) return;
+    onChange([...values, v]);
+  };
+
+  const togglePreset = (v: string) => {
+    onChange(values.includes(v) ? values.filter((x) => x !== v) : [...values, v]);
+  };
+
+  const removeValue = (v: string) => onChange(values.filter((x) => x !== v));
+
+  // Union of presets and current custom values, dedup'd, in stable order.
+  const visible = [
+    ...DEFAULT_PLATFORM_SUGGESTIONS,
+    ...values.filter((v) => !DEFAULT_PLATFORM_SUGGESTIONS.includes(v)),
+  ];
+
+  return (
+    <div className="flex flex-wrap gap-1.5 items-center">
+      {visible.map((v) => {
+        const active = values.includes(v);
+        const isCustom = !DEFAULT_PLATFORM_SUGGESTIONS.includes(v);
+        return (
+          <button
+            key={v}
+            type="button"
+            onClick={() => togglePreset(v)}
+            className={cn(
+              "inline-flex items-center gap-1.5 h-8 pl-2.5 pr-2.5 rounded-md border text-xs font-mono transition-colors",
+              active
+                ? "bg-primary/10 border-primary/40 text-foreground"
+                : "bg-background border-input text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {v}
+            {active && isCustom && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeValue(v);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    removeValue(v);
+                  }
+                }}
+                aria-label={`Remove ${v}`}
+                className="text-muted-foreground hover:text-destructive rounded cursor-pointer"
+              >
+                <X className="h-3 w-3" />
+              </span>
+            )}
+          </button>
+        );
+      })}
+
+      {adding ? (
+        <input
+          ref={addRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitDraft();
+            } else if (e.key === "Escape") {
+              setDraft("");
+              setAdding(false);
+            }
+          }}
+          placeholder="ios, backend…"
+          className="h-8 w-28 rounded-md border border-input bg-background px-2 text-xs font-mono outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border border-dashed border-input text-xs text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+        >
+          <Plus className="h-3 w-3" />
+          Custom
+        </button>
+      )}
+    </div>
+  );
 }
 
 function SortableTaskRow({
@@ -182,71 +328,77 @@ function SortableTaskRow({
   const isGoogleTask = task.actionType === "google_task";
   const isCalendarEvent = task.actionType === "calendar_event";
   const isSlack = task.actionType === "slack_message";
+  const isLegacyManual = task.actionType === "manual";
+  const direction = offsetToDirection(task.dayOffset);
+  const daysAbs = Math.abs(task.dayOffset);
+
+  const setDirection = (next: OffsetDirection) => {
+    if (next === "on") {
+      onChange({ ...task, dayOffset: 0 });
+      return;
+    }
+    const magnitude = daysAbs === 0 ? 1 : daysAbs;
+    onChange({ ...task, dayOffset: next === "before" ? -magnitude : magnitude });
+  };
+
+  const setDaysMagnitude = (n: number) => {
+    const mag = Math.max(0, Math.floor(n));
+    if (mag === 0) {
+      onChange({ ...task, dayOffset: 0 });
+      return;
+    }
+    const sign = direction === "before" ? -1 : 1;
+    onChange({ ...task, dayOffset: sign * mag });
+  };
+
+  const whenPreviewLine = (() => {
+    if (direction === "on") return "Due on the release date";
+    const suffix = direction === "before" ? "before release" : "after release";
+    return `Due ${daysAbs || 1} day${(daysAbs || 1) === 1 ? "" : "s"} ${suffix}`;
+  })();
 
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className="py-3 px-3 bg-background hover:bg-muted/20 transition-colors"
+      className="bg-background hover:bg-muted/10 transition-colors"
     >
-      {/* Summary row */}
-      <div className="flex items-start gap-2">
+      {/* Compact header: drag · action toggle · row actions */}
+      <div className="flex items-center gap-2 px-3 pt-3">
         <button
           {...attributes}
           {...listeners}
-          className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground shrink-0 touch-none mt-1.5"
+          className="cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-foreground shrink-0 touch-none"
           aria-label="Drag to reorder"
           type="button"
         >
           <GripVertical className="h-4 w-4" />
         </button>
 
-        <div className="flex-1 min-w-0 space-y-0.5">
-          <div className="flex items-center gap-1.5">
-            <input
-              ref={labelRef}
-              value={task.label}
-              onChange={(e) => onChange({ ...task, label: e.target.value })}
-              placeholder="Task label"
-              className={INPUT_CLASS}
-            />
-            <MergeFieldPicker onInsert={insertToLabel} />
-          </div>
+        {/* iOS-style segmented control for action type */}
+        <div className="inline-flex rounded-lg bg-muted p-0.5 gap-0.5">
+          <ActionPickerButton
+            active={isGoogleTask}
+            onClick={() => onChange({ ...task, actionType: "google_task" })}
+            icon={<GoogleTasksIcon className="h-4 w-4 rounded" />}
+            label="Task"
+          />
+          <ActionPickerButton
+            active={isCalendarEvent}
+            onClick={() => onChange({ ...task, actionType: "calendar_event" })}
+            icon={<GoogleCalendarIcon className="h-4 w-4" />}
+            label="Calendar"
+          />
         </div>
 
-        <select
-          value={task.actionType}
-          onChange={(e) =>
-            onChange({ ...task, actionType: e.target.value as ActionType })
-          }
-          className={cn(SELECT_CLASS, "w-40 shrink-0 mt-0")}
-        >
-          {ACTION_PICKER_TYPES.map((t) => (
-            <option key={t} value={t}>{ACTION_LABELS[t]}</option>
-          ))}
-          {/* Only show slack_message if the existing task already has it */}
-          {isSlack && <option value="slack_message">{ACTION_LABELS.slack_message}</option>}
-        </select>
-
-        <div className="flex flex-col items-start gap-0.5 shrink-0 mt-0 w-24">
-          <div className="flex items-center gap-1">
-            <input
-              type="number"
-              value={task.dayOffset}
-              onChange={(e) =>
-                onChange({ ...task, dayOffset: parseInt(e.target.value, 10) || 0 })
-              }
-              className={cn(INPUT_CLASS, "w-16 font-mono text-xs h-8")}
-              title="Days offset from release date (negative = before)"
-            />
-            <span className="text-xs text-muted-foreground">d</span>
-          </div>
-          <span className="text-xxs text-muted-foreground whitespace-nowrap tabular-nums">
-            {relativeDayLabel(task.dayOffset)}
+        {(isLegacyManual || isSlack) && (
+          <span className="text-xxs text-amber-700 dark:text-amber-400 inline-flex items-center gap-1 ml-1">
+            <AlertTriangle className="h-3 w-3" />
+            Legacy {ACTION_LABELS[task.actionType]}
           </span>
-        </div>
+        )}
 
-        <div className="flex items-center gap-0.5 shrink-0 mt-1">
+        <div className="ml-auto flex items-center gap-0.5">
           <button
             onClick={onDuplicate}
             className="text-muted-foreground hover:text-foreground h-7 w-7 inline-flex items-center justify-center rounded-md hover:bg-muted transition-colors"
@@ -268,12 +420,29 @@ function SortableTaskRow({
         </div>
       </div>
 
-      {/* Details — indented under the handle */}
-      <div className="pl-6 pt-2.5 space-y-3">
-        {/* Description */}
-        <div className="space-y-1">
+      {/* Body */}
+      <div className="px-3 pt-3 pb-4 space-y-4">
+        {/* Title */}
+        <div className="space-y-1.5">
           <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
-            Description
+            Title
+          </Label>
+          <div className="flex items-center gap-1.5">
+            <input
+              ref={labelRef}
+              value={task.label}
+              onChange={(e) => onChange({ ...task, label: e.target.value })}
+              placeholder={isCalendarEvent ? "Event title…" : "Task title…"}
+              className={cn(INPUT_CLASS, "h-9 text-sm")}
+            />
+            <MergeFieldPicker onInsert={insertToLabel} />
+          </div>
+        </div>
+
+        {/* Description */}
+        <div className="space-y-1.5">
+          <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
+            Notes
           </Label>
           <div className="flex items-start gap-1.5">
             <textarea
@@ -281,11 +450,9 @@ function SortableTaskRow({
               value={task.description}
               onChange={(e) => onChange({ ...task, description: e.target.value })}
               placeholder={
-                isGoogleTask
-                  ? "Notes shown on the Google Task…"
-                  : isCalendarEvent
+                isCalendarEvent
                   ? "Details shown on the calendar event…"
-                  : "Checklist note for yourself…"
+                  : "Notes shown on the Google Task…"
               }
               rows={2}
               className={TEXTAREA_CLASS}
@@ -294,133 +461,195 @@ function SortableTaskRow({
           </div>
         </div>
 
-        {/* Action config */}
+        {/* When */}
         <div className="space-y-1.5">
-          <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
-            Action config
-          </Label>
-          <div className="rounded-md border bg-muted/20 px-3 py-2 min-h-[44px]">
-            {task.actionType === "manual" && (
-              <p className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
-                <Info className="h-3 w-3" />
-                Manual task — no auto-dispatch. You&apos;ll check it off yourself.
-              </p>
+          <div className="flex items-baseline justify-between">
+            <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
+              When
+            </Label>
+            <span className="text-xxs text-muted-foreground italic">
+              {whenPreviewLine}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="inline-flex rounded-lg bg-muted p-0.5 gap-0.5">
+              {(
+                [
+                  { value: "before" as const, label: "Before release" },
+                  { value: "on" as const, label: "Release day" },
+                  { value: "after" as const, label: "After release" },
+                ]
+              ).map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setDirection(value)}
+                  className={cn(
+                    "h-8 px-3 text-xs transition-all rounded-md",
+                    direction === value
+                      ? "bg-background text-foreground font-medium shadow-sm"
+                      : "bg-transparent text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {direction !== "on" && (
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="1"
+                  value={daysAbs}
+                  onChange={(e) => setDaysMagnitude(parseInt(e.target.value, 10) || 0)}
+                  className={cn(INPUT_CLASS, "w-14 h-8 font-mono text-xs text-center")}
+                />
+                <span className="text-xs text-muted-foreground">
+                  day{daysAbs === 1 ? "" : "s"}
+                </span>
+              </div>
             )}
+          </div>
+        </div>
+
+        {/* Delivery — no bordered sub-card; inline. */}
+        {!isLegacyManual && !isSlack && (
+          <div className="space-y-1.5 border-t border-dashed pt-3">
+            <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
+              Delivery
+            </Label>
 
             {isGoogleTask && (
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground w-20 shrink-0">Task list</span>
-                  {taskLists.length > 0 ? (
-                    <select
-                      value={task.taskListId}
-                      onChange={(e) => onChange({ ...task, taskListId: e.target.value })}
-                      className={cn(SELECT_CLASS, "flex-1 max-w-sm h-7")}
-                    >
-                      <option value="@default">Default task list</option>
-                      {taskLists.map((l) => (
-                        <option key={l.id} value={l.id}>{l.title}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      value={task.taskListId}
-                      onChange={(e) => onChange({ ...task, taskListId: e.target.value })}
-                      placeholder="@default"
-                      className={cn(INPUT_CLASS, "h-7 font-mono text-xs flex-1 max-w-sm")}
-                    />
-                  )}
-                </div>
-                <p className="text-xxs text-muted-foreground pl-[calc(5rem+0.5rem)]">
-                  Tasks are date-only — the Google Tasks API discards time. Use a
-                  Calendar Event if you need a specific time.
+              <div className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-2">
+                <span className="text-xs text-muted-foreground">Task list</span>
+                {taskLists.length > 0 ? (
+                  <select
+                    value={task.taskListId}
+                    onChange={(e) => onChange({ ...task, taskListId: e.target.value })}
+                    className={cn(SELECT_CLASS, "h-8 w-full max-w-sm text-xs")}
+                  >
+                    <option value="@default">Default task list</option>
+                    {taskLists.map((l) => (
+                      <option key={l.id} value={l.id}>{l.title}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={task.taskListId}
+                    onChange={(e) => onChange({ ...task, taskListId: e.target.value })}
+                    placeholder="@default"
+                    className={cn(INPUT_CLASS, "h-8 font-mono text-xs max-w-sm")}
+                  />
+                )}
+                <span />
+                <p className="text-xxs text-muted-foreground">
+                  Tasks are date-only. Switch to Calendar for a specific time.
                 </p>
               </div>
             )}
 
             {isCalendarEvent && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground w-20 shrink-0">Calendar</span>
-                  {calendars.length > 0 ? (
-                    <select
-                      value={task.calendarId}
-                      onChange={(e) => onChange({ ...task, calendarId: e.target.value })}
-                      className={cn(SELECT_CLASS, "flex-1 max-w-sm h-7")}
+              <div className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-2">
+                <span className="text-xs text-muted-foreground">Calendar</span>
+                {calendars.length > 0 ? (
+                  <select
+                    value={task.calendarId}
+                    onChange={(e) => onChange({ ...task, calendarId: e.target.value })}
+                    className={cn(SELECT_CLASS, "h-8 w-full max-w-sm text-xs")}
+                  >
+                    <option value="primary">Primary calendar</option>
+                    {calendars.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.summary}{c.primary ? " (primary)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={task.calendarId}
+                    onChange={(e) => onChange({ ...task, calendarId: e.target.value })}
+                    placeholder="primary"
+                    className={cn(INPUT_CLASS, "h-8 font-mono text-xs max-w-sm")}
+                  />
+                )}
+
+                <span className="text-xs text-muted-foreground">Time</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="inline-flex rounded-lg bg-muted p-0.5 gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => onChange({ ...task, allDay: true })}
+                      className={cn(
+                        "h-8 px-3 text-xs transition-all rounded-md",
+                        task.allDay
+                          ? "bg-background text-foreground font-medium shadow-sm"
+                          : "bg-transparent text-muted-foreground hover:text-foreground",
+                      )}
                     >
-                      <option value="primary">Primary calendar</option>
-                      {calendars.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.summary}{c.primary ? " (primary)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      value={task.calendarId}
-                      onChange={(e) => onChange({ ...task, calendarId: e.target.value })}
-                      placeholder="primary"
-                      className={cn(INPUT_CLASS, "h-7 font-mono text-xs flex-1 max-w-sm")}
-                    />
+                      All day
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onChange({ ...task, allDay: false })}
+                      className={cn(
+                        "h-8 px-3 text-xs transition-all rounded-md",
+                        !task.allDay
+                          ? "bg-background text-foreground font-medium shadow-sm"
+                          : "bg-transparent text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      At time
+                    </button>
+                  </div>
+                  {!task.allDay && (
+                    <>
+                      <input
+                        type="time"
+                        value={task.startTime || "09:00"}
+                        onChange={(e) => onChange({ ...task, startTime: e.target.value })}
+                        className={cn(INPUT_CLASS, "h-8 w-28 text-xs font-mono")}
+                      />
+                      <span className="text-xs text-muted-foreground">for</span>
+                      <input
+                        type="number"
+                        min="5"
+                        max="480"
+                        step="5"
+                        value={task.durationMinutes}
+                        onChange={(e) =>
+                          onChange({ ...task, durationMinutes: parseInt(e.target.value, 10) || 30 })
+                        }
+                        className={cn(INPUT_CLASS, "h-8 w-16 text-xs font-mono")}
+                      />
+                      <span className="text-xs text-muted-foreground">min</span>
+                    </>
                   )}
                 </div>
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs text-muted-foreground w-20 shrink-0">When</span>
-                  <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={task.allDay}
-                      onChange={() => onChange({ ...task, allDay: true })}
-                    />
-                    All day
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={!task.allDay}
-                      onChange={() => onChange({ ...task, allDay: false })}
-                    />
-                    At
-                  </label>
-                  <input
-                    type="time"
-                    value={task.startTime || "09:00"}
-                    onChange={(e) => onChange({ ...task, startTime: e.target.value })}
-                    disabled={task.allDay}
-                    className={cn(INPUT_CLASS, "h-7 w-28 text-xs font-mono")}
-                  />
-                  <span className="text-xs text-muted-foreground">for</span>
-                  <input
-                    type="number"
-                    min="5"
-                    max="480"
-                    step="5"
-                    value={task.durationMinutes}
-                    onChange={(e) =>
-                      onChange({ ...task, durationMinutes: parseInt(e.target.value, 10) || 30 })
-                    }
-                    disabled={task.allDay}
-                    className={cn(INPUT_CLASS, "h-7 w-16 text-xs font-mono")}
-                  />
-                  <span className="text-xs text-muted-foreground">min</span>
-                </div>
                 {!task.allDay && (
-                  <p className="text-xxs text-muted-foreground pl-[calc(5rem+0.5rem)]">
-                    Uses the standup timezone from Settings.
-                  </p>
+                  <>
+                    <span />
+                    <p className="text-xxs text-muted-foreground">
+                      Uses the standup timezone from Settings.
+                    </p>
+                  </>
                 )}
               </div>
             )}
-
-            {isSlack && (
-              <p className="text-xs text-amber-700 dark:text-amber-400 inline-flex items-center gap-1.5">
-                <AlertTriangle className="h-3 w-3" />
-                Slack dispatch is not yet implemented — this row won&apos;t auto-dispatch.
-              </p>
-            )}
           </div>
-        </div>
+        )}
+
+        {isLegacyManual && (
+          <p className="text-xs text-muted-foreground inline-flex items-center gap-1.5 border-t border-dashed pt-3">
+            <Info className="h-3 w-3" />
+            Legacy Manual task — won&apos;t auto-dispatch until you pick Task or Calendar above.
+          </p>
+        )}
+        {isSlack && (
+          <p className="text-xs text-amber-700 dark:text-amber-400 inline-flex items-center gap-1.5 border-t border-dashed pt-3">
+            <AlertTriangle className="h-3 w-3" />
+            Slack dispatch is not yet implemented — this row won&apos;t auto-dispatch.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -438,8 +667,8 @@ export default function TemplateEditorPage() {
   const [saved, setSaved] = useState(false);
 
   const [name, setName] = useState("");
-  const [platformPrefix, setPlatformPrefix] = useState("");
-  const [releaseType, setReleaseType] = useState<ReleaseType | "">("");
+  const [platformPrefixes, setPlatformPrefixes] = useState<string[]>([]);
+  const [releaseTypes, setReleaseTypes] = useState<ReleaseType[]>([]);
   const [tasks, setTasks] = useState<DraftTask[]>([]);
 
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
@@ -458,8 +687,8 @@ export default function TemplateEditorPage() {
         const t: ReleaseTemplate = data.template;
         setTemplate(t);
         setName(t.name);
-        setPlatformPrefix(t.platformPrefix ?? "");
-        setReleaseType(t.releaseType ?? "");
+        setPlatformPrefixes(t.platformPrefixes ?? []);
+        setReleaseTypes(t.releaseTypes ?? []);
         setTasks((data.tasks ?? []).map(taskToRow));
       })
       .finally(() => setLoading(false));
@@ -484,7 +713,7 @@ export default function TemplateEditorPage() {
   useEffect(() => {
     if (saved) setSaved(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, platformPrefix, releaseType, tasks]);
+  }, [name, platformPrefixes, releaseTypes, tasks]);
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event;
@@ -505,8 +734,8 @@ export default function TemplateEditorPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: name.trim(),
-        platformPrefix: platformPrefix.trim() || null,
-        releaseType: releaseType || null,
+        platformPrefixes: platformPrefixes.length > 0 ? platformPrefixes : null,
+        releaseTypes: releaseTypes.length > 0 ? releaseTypes : null,
         tasks: tasks.map((t) => ({
           label: t.label,
           description: t.description.trim() || null,
@@ -592,7 +821,7 @@ export default function TemplateEditorPage() {
             Template
           </h2>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-5">
             <div className="space-y-1.5">
               <Label htmlFor="name" className="text-xs">Name</Label>
               <input
@@ -603,36 +832,55 @@ export default function TemplateEditorPage() {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="platform" className="text-xs">Platform prefix</Label>
-                <input
-                  id="platform"
-                  value={platformPrefix}
-                  onChange={(e) => setPlatformPrefix(e.target.value)}
-                  placeholder="web, android (blank = any)"
-                  className={cn(INPUT_CLASS, "font-mono text-xs")}
-                />
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between">
+                <Label className="text-xs">Platforms</Label>
+                <span className="text-xxs text-muted-foreground">
+                  Part before <code className="bg-muted px-1 rounded">@</code>. Empty = any.
+                </span>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="releaseType" className="text-xs">Release type</Label>
-                <select
-                  id="releaseType"
-                  value={releaseType}
-                  onChange={(e) => setReleaseType(e.target.value as ReleaseType | "")}
-                  className={cn(SELECT_CLASS, "h-8 w-full text-sm")}
-                >
-                  {RELEASE_TYPES.map(({ value, label }) => (
-                    <option key={value} value={value}>{label}</option>
-                  ))}
-                </select>
+              <PlatformChipInput
+                values={platformPrefixes}
+                onChange={setPlatformPrefixes}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between">
+                <Label className="text-xs">Release types</Label>
+                <span className="text-xxs text-muted-foreground">
+                  Derived from semver. Empty = any.
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {RELEASE_TYPE_OPTIONS.map(({ value, label, hint }) => {
+                  const active = releaseTypes.includes(value);
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() =>
+                        setReleaseTypes((prev) =>
+                          active
+                            ? prev.filter((v) => v !== value)
+                            : [...prev, value],
+                        )
+                      }
+                      className={cn(
+                        "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border text-xs transition-colors",
+                        active
+                          ? "bg-primary/10 border-primary/40 text-foreground"
+                          : "bg-background border-input text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      <span className="font-medium">{label}</span>
+                      <span className="text-[10px] font-mono opacity-60">{hint}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
-          <p className="text-xxs text-muted-foreground">
-            Matches the part before <code className="bg-muted px-1 rounded">@</code> in the version name.
-            Release type is derived from semver: x.0.0 = major, x.y.0 = minor, x.y.z = patch.
-          </p>
         </section>
 
         {/* Tasks */}
@@ -674,23 +922,27 @@ export default function TemplateEditorPage() {
                 items={tasks.map((t) => t._key)}
                 strategy={verticalListSortingStrategy}
               >
-                <div className="rounded-lg border divide-y overflow-hidden">
+                <div className="space-y-3">
                   {tasks.map((task) => (
-                    <SortableTaskRow
+                    <div
                       key={task._key}
-                      task={task}
-                      taskLists={taskLists}
-                      calendars={calendars}
-                      onChange={(updated) =>
-                        setTasks((prev) =>
-                          prev.map((t) => (t._key === updated._key ? updated : t))
-                        )
-                      }
-                      onDuplicate={() => handleDuplicate(task._key)}
-                      onDelete={() =>
-                        setTasks((prev) => prev.filter((t) => t._key !== task._key))
-                      }
-                    />
+                      className="rounded-xl border bg-card shadow-sm overflow-hidden"
+                    >
+                      <SortableTaskRow
+                        task={task}
+                        taskLists={taskLists}
+                        calendars={calendars}
+                        onChange={(updated) =>
+                          setTasks((prev) =>
+                            prev.map((t) => (t._key === updated._key ? updated : t))
+                          )
+                        }
+                        onDuplicate={() => handleDuplicate(task._key)}
+                        onDelete={() =>
+                          setTasks((prev) => prev.filter((t) => t._key !== task._key))
+                        }
+                      />
+                    </div>
                   ))}
                 </div>
               </SortableContext>

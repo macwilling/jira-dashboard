@@ -35,8 +35,8 @@ export async function PUT(
   try {
     const body = (await req.json()) as {
       name?: string;
-      platformPrefix?: string | null;
-      releaseType?: ReleaseType | null;
+      platformPrefixes?: string[] | null;
+      releaseTypes?: ReleaseType[] | null;
       tasks?: Array<{
         label: string;
         description?: string | null;
@@ -54,11 +54,10 @@ export async function PUT(
       return NextResponse.json({ error: "not found" }, { status: 404 });
     }
 
-    await updateTemplate(id, {
-      name: body.name,
-      platformPrefix: body.platformPrefix,
-      releaseType: body.releaseType,
-    });
+    const updateArgs: Parameters<typeof updateTemplate>[1] = { name: body.name };
+    if ("platformPrefixes" in body) updateArgs.platformPrefixes = body.platformPrefixes ?? null;
+    if ("releaseTypes" in body) updateArgs.releaseTypes = body.releaseTypes ?? null;
+    await updateTemplate(id, updateArgs);
 
     if (body.tasks !== undefined) {
       await replaceTemplateTasks(id, body.tasks);

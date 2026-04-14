@@ -43,11 +43,24 @@ const TEMPLATE_LABEL: Record<TemplateFilter, string> = {
   none: "No template",
 };
 
+/** Reduces any ISO date or timestamp ("2026-04-13", "2026-04-13T00:00:00.0+0000") to YYYY-MM-DD. */
+function dateOnly(iso: string): string {
+  return iso.slice(0, 10);
+}
+
 function daysBetween(iso: string): number {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const target = new Date(iso + "T00:00:00");
+  const target = new Date(`${dateOnly(iso)}T00:00:00`);
+  if (isNaN(target.getTime())) return 0;
   return Math.round((target.getTime() - today.getTime()) / 86_400_000);
+}
+
+/** Format a date as "Apr 13, 2026" (locale short). */
+function formatDate(iso: string): string {
+  const d = new Date(`${dateOnly(iso)}T00:00:00`);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function relativeDate(iso: string | null, released: boolean): {
@@ -56,12 +69,13 @@ function relativeDate(iso: string | null, released: boolean): {
   tone: "overdue" | "soon" | "today" | "future" | "released" | "none";
 } {
   if (!iso) return { label: "No date", subLabel: "", tone: "none" };
+  const label = formatDate(iso);
   const days = daysBetween(iso);
-  if (released) return { label: iso, subLabel: "shipped", tone: "released" };
-  if (days < 0) return { label: iso, subLabel: `${Math.abs(days)}d overdue`, tone: "overdue" };
-  if (days === 0) return { label: iso, subLabel: "today", tone: "today" };
-  if (days <= 7) return { label: iso, subLabel: `in ${days}d`, tone: "soon" };
-  return { label: iso, subLabel: `in ${days}d`, tone: "future" };
+  if (released) return { label, subLabel: "shipped", tone: "released" };
+  if (days < 0) return { label, subLabel: `${Math.abs(days)}d overdue`, tone: "overdue" };
+  if (days === 0) return { label, subLabel: "today", tone: "today" };
+  if (days <= 7) return { label, subLabel: `in ${days}d`, tone: "soon" };
+  return { label, subLabel: `in ${days}d`, tone: "future" };
 }
 
 function progressTone(done: number, total: number, dateTone: string, released: boolean) {
@@ -210,53 +224,70 @@ export default function ReleasesPage() {
   return (
     <AppShell title="Releases">
       <div className="flex flex-col">
-        {/* Filter bar */}
-        <div className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur px-4 py-2">
-          <div className="max-w-7xl mx-auto flex items-center gap-2 flex-wrap">
-            <FilterGroup
-              label="Scope"
-              value={scope}
-              onChange={(v) => setScope(v as ScopeFilter)}
-              options={(Object.keys(SCOPE_LABEL) as ScopeFilter[]).map((s) => ({
-                value: s,
-                label: SCOPE_LABEL[s],
-                count: counts[s],
-              }))}
-            />
+        {/* Filter bar — scope tabs on the left, secondary filters on the right */}
+        <div className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur px-4 py-2.5">
+          <div className="max-w-7xl mx-auto flex items-center gap-3 flex-wrap">
+            {/* Scope — primary pill tabs, no label, counts in muted small type */}
+            <div className="inline-flex rounded-lg bg-muted p-0.5 gap-0.5">
+              {(Object.keys(SCOPE_LABEL) as ScopeFilter[]).map((s) => {
+                const active = scope === s;
+                const count = counts[s];
+                return (
+                  <button
+                    key={s}
+                    onClick={() => setScope(s)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs transition-all",
+                      active
+                        ? "bg-background text-foreground font-medium shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {SCOPE_LABEL[s]}
+                    <span
+                      className={cn(
+                        "text-[10px] tabular-nums",
+                        active ? "text-muted-foreground" : "text-muted-foreground/60",
+                      )}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
 
-            <div className="w-px h-4 bg-border mx-1" />
-
-            <FilterGroup
-              label="Template"
-              value={templateFilter}
-              onChange={(v) => setTemplateFilter(v as TemplateFilter)}
-              options={(Object.keys(TEMPLATE_LABEL) as TemplateFilter[]).map(
-                (s) => ({ value: s, label: TEMPLATE_LABEL[s] })
-              )}
-            />
-
-            {platformOptions.length > 0 && (
-              <>
-                <div className="w-px h-4 bg-border mx-1" />
-                <label className="text-xs text-muted-foreground">Platform</label>
+            {/* Secondary filters — right-aligned, compact, only shown when meaningful */}
+            <div className="ml-auto flex items-center gap-2">
+              {platformOptions.length > 1 && (
                 <select
                   value={platform}
                   onChange={(e) => setPlatform(e.target.value)}
-                  className="text-xs h-7 rounded-md border bg-background px-2"
+                  className="text-xs h-7 rounded-md border bg-background px-2 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                  title="Filter by platform"
                 >
-                  <option value="">Any</option>
+                  <option value="">All platforms</option>
                   {platformOptions.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
+                    <option key={p} value={p}>{p}</option>
                   ))}
                 </select>
-              </>
-            )}
-
-            <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-              {sorted.length} of {releases.length}
-            </span>
+              )}
+              <select
+                value={templateFilter}
+                onChange={(e) => setTemplateFilter(e.target.value as TemplateFilter)}
+                className="text-xs h-7 rounded-md border bg-background px-2 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                title="Filter by template match"
+              >
+                {(Object.keys(TEMPLATE_LABEL) as TemplateFilter[]).map((t) => (
+                  <option key={t} value={t}>{TEMPLATE_LABEL[t]}</option>
+                ))}
+              </select>
+              <span className="text-xs text-muted-foreground tabular-nums pl-1">
+                {sorted.length === releases.length
+                  ? `${releases.length}`
+                  : `${sorted.length} of ${releases.length}`}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -350,46 +381,6 @@ export default function ReleasesPage() {
   );
 }
 
-function FilterGroup<T extends string>({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: T;
-  onChange: (v: T) => void;
-  options: { value: T; label: string; count?: number }[];
-}) {
-  return (
-    <div className="flex items-center gap-1">
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground pr-1">
-        {label}
-      </span>
-      <div className="inline-flex items-center gap-0.5 p-0.5 rounded-md bg-muted/50">
-        {options.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => onChange(opt.value)}
-            className={cn(
-              "inline-flex items-center gap-1.5 px-2 h-6 rounded text-xs transition-colors",
-              value === opt.value
-                ? "bg-background text-foreground shadow-sm font-medium"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {opt.label}
-            {opt.count != null && (
-              <span className="text-[10px] text-muted-foreground tabular-nums">
-                {opt.count}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function SortableTh({
   label,

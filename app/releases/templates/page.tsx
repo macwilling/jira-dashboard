@@ -65,19 +65,23 @@ function SortableTemplateRow({ template }: { template: ReleaseTemplate }) {
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium">{template.name}</p>
         <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-          {template.platformPrefix ? (
-            <Badge variant="secondary" className="text-xs h-4 px-1.5">
-              {template.platformPrefix}
-            </Badge>
+          {template.platformPrefixes && template.platformPrefixes.length > 0 ? (
+            template.platformPrefixes.map((p) => (
+              <Badge key={`p-${p}`} variant="secondary" className="text-xs h-4 px-1.5">
+                {p}
+              </Badge>
+            ))
           ) : (
             <Badge variant="outline" className="text-xs h-4 px-1.5 text-muted-foreground">
               any platform
             </Badge>
           )}
-          {template.releaseType ? (
-            <Badge variant="secondary" className="text-xs h-4 px-1.5">
-              {template.releaseType}
-            </Badge>
+          {template.releaseTypes && template.releaseTypes.length > 0 ? (
+            template.releaseTypes.map((t) => (
+              <Badge key={`t-${t}`} variant="secondary" className="text-xs h-4 px-1.5">
+                {t}
+              </Badge>
+            ))
           ) : (
             <Badge variant="outline" className="text-xs h-4 px-1.5 text-muted-foreground">
               any type

@@ -44,8 +44,11 @@ export function parseReleaseName(name: string): ParsedReleaseName {
 /**
  * Finds the highest-priority matching template for a release name.
  * Templates must be sorted by priority ASC before calling.
- * Returns the first template where platform_prefix and release_type both match
- * (NULL fields in the template act as wildcards).
+ *
+ * Match rule: OR within each list, AND across the two.
+ * `null` or empty list = wildcard. So a template with
+ *   platformPrefixes: ["web", "android"], releaseTypes: ["minor"]
+ * matches web or android minor releases only.
  */
 export function matchTemplate(
   releaseName: string,
@@ -55,12 +58,14 @@ export function matchTemplate(
 
   for (const tmpl of templates) {
     const platformMatch =
-      tmpl.platformPrefix === null ||
-      tmpl.platformPrefix === platform;
+      !tmpl.platformPrefixes ||
+      tmpl.platformPrefixes.length === 0 ||
+      (platform !== null && tmpl.platformPrefixes.includes(platform));
 
     const typeMatch =
-      tmpl.releaseType === null ||
-      tmpl.releaseType === releaseType;
+      !tmpl.releaseTypes ||
+      tmpl.releaseTypes.length === 0 ||
+      (releaseType !== null && tmpl.releaseTypes.includes(releaseType));
 
     if (platformMatch && typeMatch) {
       return tmpl;

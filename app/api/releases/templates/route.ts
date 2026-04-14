@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { listTemplates, createTemplate } from "@/lib/releases/templates-store";
 import type { ReleaseType } from "@/lib/releases/types";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   try {
     const templates = await listTemplates();
@@ -15,8 +17,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as {
       name?: string;
-      platformPrefix?: string | null;
-      releaseType?: ReleaseType | null;
+      platformPrefixes?: string[] | null;
+      releaseTypes?: ReleaseType[] | null;
     };
 
     if (!body.name?.trim()) {
@@ -25,8 +27,8 @@ export async function POST(req: NextRequest) {
 
     const template = await createTemplate({
       name: body.name.trim(),
-      platformPrefix: body.platformPrefix ?? null,
-      releaseType: body.releaseType ?? null,
+      platformPrefixes: body.platformPrefixes ?? null,
+      releaseTypes: body.releaseTypes ?? null,
     });
 
     return NextResponse.json({ template }, { status: 201 });

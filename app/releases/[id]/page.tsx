@@ -52,10 +52,21 @@ const ACTION_DISPATCH_LABEL: Record<ActionType, string> = {
   slack_message: "Send message",
 };
 
+function dateOnly(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+function formatShortDate(iso: string): string {
+  const d = new Date(`${dateOnly(iso)}T00:00:00`);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 function daysFromToday(iso: string): number {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const target = new Date(`${iso}T00:00:00`);
+  const target = new Date(`${dateOnly(iso)}T00:00:00`);
+  if (isNaN(target.getTime())) return 0;
   return Math.round((target.getTime() - today.getTime()) / 86_400_000);
 }
 
@@ -66,11 +77,12 @@ interface DateMeta {
 
 function dateMeta(iso: string | null): DateMeta {
   if (!iso) return { label: "No date", tone: "none" };
+  const pretty = formatShortDate(iso);
   const d = daysFromToday(iso);
-  if (d < 0) return { label: `${iso} · ${Math.abs(d)}d overdue`, tone: "overdue" };
-  if (d === 0) return { label: `${iso} · today`, tone: "today" };
-  if (d <= 3) return { label: `${iso} · in ${d}d`, tone: "soon" };
-  return { label: `${iso} · in ${d}d`, tone: "future" };
+  if (d < 0) return { label: `${pretty} · ${Math.abs(d)}d overdue`, tone: "overdue" };
+  if (d === 0) return { label: `${pretty} · today`, tone: "today" };
+  if (d <= 3) return { label: `${pretty} · in ${d}d`, tone: "soon" };
+  return { label: `${pretty} · in ${d}d`, tone: "future" };
 }
 
 function DateChip({ dueDate, done }: { dueDate: string | null; done: boolean }) {
@@ -432,9 +444,9 @@ export default function ReleasePage() {
               {release.released && <Badge variant="secondary" className="text-xs h-5 px-1.5">Released</Badge>}
               {release.archived && <Badge variant="outline" className="text-xs h-5 px-1.5">Archived</Badge>}
               {release.releaseDate && (
-                <span className="text-xs text-muted-foreground inline-flex items-center gap-1 font-mono tabular-nums">
+                <span className="text-xs text-muted-foreground inline-flex items-center gap-1 tabular-nums">
                   <Calendar className="h-3 w-3" />
-                  {release.releaseDate}
+                  {formatShortDate(release.releaseDate)}
                 </span>
               )}
             </div>
