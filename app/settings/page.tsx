@@ -19,6 +19,7 @@ interface ConfigStatus {
     boardId?: string;
     standupTime?: string;
     standupTimezone?: string;
+    slackWebhookUrl?: string;
   } | null;
 }
 
@@ -46,6 +47,7 @@ export default function SettingsPage() {
   const [boardId, setBoardId] = useState("");
   const [standupTime, setStandupTime] = useState("09:00");
   const [standupTimezone, setStandupTimezone] = useState("");
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState("");
 
   const loadGoogleStatus = useCallback(() => {
     fetch("/api/google/status")
@@ -80,6 +82,7 @@ export default function SettingsPage() {
           setBoardId(data.config.boardId || "");
           setStandupTime(data.config.standupTime || "09:00");
           setStandupTimezone(data.config.standupTimezone || "");
+          setSlackWebhookUrl(data.config.slackWebhookUrl || "");
         }
       })
       .catch(() => {})
@@ -105,6 +108,7 @@ export default function SettingsPage() {
           ...(boardId.trim() ? { boardId: boardId.trim() } : {}),
           ...(standupTime ? { standupTime } : {}),
           ...(standupTimezone.trim() ? { standupTimezone: standupTimezone.trim() } : {}),
+          ...(slackWebhookUrl.trim() ? { slackWebhookUrl: slackWebhookUrl.trim() } : {}),
         }),
       });
       if (res.ok) setSaved(true);
@@ -365,6 +369,35 @@ export default function SettingsPage() {
                 Calendar only.
               </p>
             )}
+          </div>
+        </section>
+
+        {/* Slack notifications */}
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Slack Notifications
+          </h2>
+          <div className="rounded-lg border p-4 space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="slackWebhook" className="text-xs">
+                Default webhook URL
+              </Label>
+              <Input
+                id="slackWebhook"
+                type="url"
+                value={slackWebhookUrl}
+                onChange={(e) => setSlackWebhookUrl(e.target.value)}
+                placeholder="https://hooks.slack.com/…  or  Workflow Builder URL"
+                className="text-xs font-mono"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <p className="text-xxs text-muted-foreground">
+                Used by notification rules that don&apos;t specify their own URL.
+                Each template&apos;s <span className="font-medium">Notifications</span> section can
+                override this per rule for routing events to different channels.
+              </p>
+            </div>
           </div>
         </section>
 

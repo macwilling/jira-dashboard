@@ -25,9 +25,32 @@ export interface JiraVersionPayload {
   projectId: number | string;
 }
 
-export type ActionType = "manual" | "google_task" | "calendar_event" | "slack_message";
+export type ActionType = "manual" | "google_task" | "calendar_event";
 export type ReleaseType = "major" | "minor" | "patch";
 export type TaskInstanceStatus = "pending" | "done" | "skipped";
+
+/**
+ * Events that can trigger a notification rule. These are fired by the release
+ * webhook handler and dispatcher — not by anything scheduled — so `dayOffset`
+ * semantics don't apply.
+ */
+export type ReleaseEventType =
+  | "release.created"
+  | "release.date_changed"
+  | "release.released"
+  | "task.failed";
+
+export interface ReleaseNotification {
+  id: string;
+  templateId: string;
+  eventType: ReleaseEventType;
+  message: string;
+  /** Overrides the global webhook URL. Null = use DashboardConfig.slackWebhookUrl. */
+  webhookUrl: string | null;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface ReleaseTemplate {
   id: string;

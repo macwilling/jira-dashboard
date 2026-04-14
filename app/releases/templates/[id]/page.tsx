@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   Info,
   X,
+  Bell,
 } from "lucide-react";
 import {
   GoogleTasksIcon,
@@ -53,6 +54,8 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   ActionType,
+  ReleaseEventType,
+  ReleaseNotification,
   ReleaseTemplate,
   ReleaseTemplateTask,
   ReleaseType,
@@ -60,13 +63,13 @@ import type {
 import type { TaskList, CalendarListEntry } from "@/lib/google/client";
 
 // Tasks in the editor can only be Google Tasks or Calendar Events now. Legacy
-// "manual" / "slack_message" rows still render (read-only picker won't offer
-// those options) but new rows default to google_task.
+// "manual" rows still render (picker won't offer them) but new rows default to
+// google_task. Slack is no longer an action type — notifications are
+// event-driven and live in the Notifications section below the task list.
 const ACTION_LABELS: Record<ActionType, string> = {
   manual: "Manual",
   google_task: "Google Task",
   calendar_event: "Calendar event",
-  slack_message: "Slack (coming soon)",
 };
 const RELEASE_TYPE_OPTIONS: Array<{ value: ReleaseType; label: string; hint: string }> = [
   { value: "major", label: "Major", hint: "x.0.0" },
@@ -115,6 +118,38 @@ function ActionPickerButton({
       {label}
     </button>
   );
+}
+
+const EVENT_OPTIONS: Array<{ value: ReleaseEventType; label: string; hint: string }> = [
+  { value: "release.created",      label: "Release created",    hint: "When a new version appears in Jira" },
+  { value: "release.date_changed", label: "Release date changed", hint: "When the release date moves" },
+  { value: "release.released",     label: "Release released",   hint: "When Jira marks the version released" },
+  { value: "task.failed",          label: "Task failed",        hint: "When a Google Task/Calendar dispatch errors" },
+];
+
+interface DraftNotification {
+  _key: string;
+  eventType: ReleaseEventType;
+  message: string;
+  webhookUrl: string;  // empty = use global
+}
+
+function notificationToRow(n: ReleaseNotification): DraftNotification {
+  return {
+    _key: newKey(),
+    eventType: n.eventType,
+    message: n.message,
+    webhookUrl: n.webhookUrl ?? "",
+  };
+}
+
+function freshNotification(): DraftNotification {
+  return {
+    _key: newKey(),
+    eventType: "release.created",
+    message: "",
+    webhookUrl: "",
+  };
 }
 
 interface DraftTask {
@@ -327,7 +362,6 @@ function SortableTaskRow({
 
   const isGoogleTask = task.actionType === "google_task";
   const isCalendarEvent = task.actionType === "calendar_event";
-  const isSlack = task.actionType === "slack_message";
   const isLegacyManual = task.actionType === "manual";
   const direction = offsetToDirection(task.dayOffset);
   const daysAbs = Math.abs(task.dayOffset);
@@ -391,7 +425,7 @@ function SortableTaskRow({
           />
         </div>
 
-        {(isLegacyManual || isSlack) && (
+        {isLegacyManual && (
           <span className="text-xxs text-amber-700 dark:text-amber-400 inline-flex items-center gap-1 ml-1">
             <AlertTriangle className="h-3 w-3" />
             Legacy {ACTION_LABELS[task.actionType]}
@@ -513,7 +547,7 @@ function SortableTaskRow({
         </div>
 
         {/* Delivery — no bordered sub-card; inline. */}
-        {!isLegacyManual && !isSlack && (
+        {!isLegacyManual && (
           <div className="space-y-1.5 border-t border-dashed pt-3">
             <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
               Delivery
@@ -644,12 +678,130 @@ function SortableTaskRow({
             Legacy Manual task — won&apos;t auto-dispatch until you pick Task or Calendar above.
           </p>
         )}
-        {isSlack && (
-          <p className="text-xs text-amber-700 dark:text-amber-400 inline-flex items-center gap-1.5 border-t border-dashed pt-3">
-            <AlertTriangle className="h-3 w-3" />
-            Slack dispatch is not yet implemented — this row won&apos;t auto-dispatch.
-          </p>
-        )}
+      </div>
+    </div>
+  );
+}
+
+function NotificationRow({
+  notification,
+  globalWebhookUrl,
+  onChange,
+  onDelete,
+}: {
+  notification: DraftNotification;
+  globalWebhookUrl: string | null;
+  onChange: (updated: DraftNotification) => void;
+  onDelete: () => void;
+}) {
+  const messageRef = useRef<HTMLTextAreaElement>(null);
+  const insertToMessage = (token: string) => {
+    const { nextValue, restoreCaret } = insertTokenAt(
+      messageRef.current,
+      notification.message,
+      token,
+    );
+    onChange({ ...notification, message: nextValue });
+    restoreCaret();
+  };
+
+  const usingGlobal = !notification.webhookUrl.trim();
+  const globalMissing = usingGlobal && !globalWebhookUrl;
+
+  return (
+    <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+      <div className="flex items-center gap-2 px-3 pt-3">
+        <Bell className="h-3.5 w-3.5 text-muted-foreground/70 shrink-0" />
+        <select
+          value={notification.eventType}
+          onChange={(e) =>
+            onChange({
+              ...notification,
+              eventType: e.target.value as ReleaseEventType,
+            })
+          }
+          className={cn(SELECT_CLASS, "h-8 text-xs")}
+        >
+          {EVENT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <span className="text-xxs text-muted-foreground hidden sm:inline">
+          {EVENT_OPTIONS.find((o) => o.value === notification.eventType)?.hint}
+        </span>
+        <div className="ml-auto">
+          <button
+            type="button"
+            onClick={onDelete}
+            className="text-muted-foreground hover:text-destructive h-7 w-7 inline-flex items-center justify-center rounded-md hover:bg-destructive/10 transition-colors"
+            aria-label="Delete notification"
+            title="Delete notification"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <div className="px-3 pt-3 pb-4 space-y-4">
+        <div className="space-y-1.5">
+          <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
+            Message
+          </Label>
+          <div className="flex items-start gap-1.5">
+            <textarea
+              ref={messageRef}
+              value={notification.message}
+              onChange={(e) =>
+                onChange({ ...notification, message: e.target.value })
+              }
+              placeholder="Message body sent as `text`. Use merge fields like {{release.name}}."
+              rows={2}
+              className={TEXTAREA_CLASS}
+            />
+            <MergeFieldPicker
+              onInsert={insertToMessage}
+              eventType={notification.eventType}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1.5 border-t border-dashed pt-3">
+          <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
+            Delivery
+          </Label>
+          <div className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-2">
+            <span className="text-xs text-muted-foreground">Webhook</span>
+            <input
+              type="url"
+              value={notification.webhookUrl}
+              onChange={(e) =>
+                onChange({ ...notification, webhookUrl: e.target.value })
+              }
+              placeholder={
+                globalWebhookUrl
+                  ? `Using global — ${globalWebhookUrl.slice(0, 48)}${globalWebhookUrl.length > 48 ? "…" : ""}`
+                  : "Paste a Slack webhook URL (global not set)"
+              }
+              className={cn(INPUT_CLASS, "h-8 text-xs font-mono")}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <span />
+            {globalMissing ? (
+              <p className="text-xxs text-amber-700 dark:text-amber-400 inline-flex items-center gap-1">
+                <AlertTriangle className="h-3 w-3" />
+                No global webhook — set one in{" "}
+                <Link href="/settings" className="underline">Settings</Link>{" "}
+                or paste a URL here.
+              </p>
+            ) : (
+              <p className="text-xxs text-muted-foreground">
+                Leave blank to use the global URL from Settings. Paste a different
+                URL to route this rule to another channel/workflow.
+              </p>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -670,6 +822,8 @@ export default function TemplateEditorPage() {
   const [platformPrefixes, setPlatformPrefixes] = useState<string[]>([]);
   const [releaseTypes, setReleaseTypes] = useState<ReleaseType[]>([]);
   const [tasks, setTasks] = useState<DraftTask[]>([]);
+  const [notifications, setNotifications] = useState<DraftNotification[]>([]);
+  const [globalWebhookUrl, setGlobalWebhookUrl] = useState<string | null>(null);
 
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
   const [calendars, setCalendars] = useState<CalendarListEntry[]>([]);
@@ -690,8 +844,19 @@ export default function TemplateEditorPage() {
         setPlatformPrefixes(t.platformPrefixes ?? []);
         setReleaseTypes(t.releaseTypes ?? []);
         setTasks((data.tasks ?? []).map(taskToRow));
+        setNotifications(
+          (data.notifications ?? []).map(notificationToRow),
+        );
       })
       .finally(() => setLoading(false));
+
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((data) => {
+        const url = (data?.config?.slackWebhookUrl as string | undefined)?.trim();
+        setGlobalWebhookUrl(url && url.length > 0 ? url : null);
+      })
+      .catch(() => setGlobalWebhookUrl(null));
 
     Promise.all([
       fetch("/api/google/task-lists").then(async (r) => ({ r, d: await r.json() })),
@@ -713,7 +878,7 @@ export default function TemplateEditorPage() {
   useEffect(() => {
     if (saved) setSaved(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, platformPrefixes, releaseTypes, tasks]);
+  }, [name, platformPrefixes, releaseTypes, tasks, notifications]);
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event;
@@ -750,6 +915,11 @@ export default function TemplateEditorPage() {
               : t.actionType === "calendar_event"
               ? { calendarId: t.calendarId || "primary" }
               : null,
+        })),
+        notifications: notifications.map((n) => ({
+          eventType: n.eventType,
+          message: n.message,
+          webhookUrl: n.webhookUrl.trim() || null,
         })),
       }),
     });
@@ -955,6 +1125,64 @@ export default function TemplateEditorPage() {
               scopes, disconnect and reconnect Google in{" "}
               <Link href="/settings" className="underline">Settings</Link>.
             </p>
+          )}
+        </section>
+
+        {/* Notifications */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Notifications
+              </h2>
+              <p className="text-xxs text-muted-foreground mt-0.5">
+                Event-driven Slack webhooks. Fires when the selected lifecycle
+                event happens for a matching release — not on a schedule.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1"
+              onClick={() =>
+                setNotifications((prev) => [...prev, freshNotification()])
+              }
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add notification
+            </Button>
+          </div>
+
+          {notifications.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-8 text-center space-y-2">
+              <p className="text-sm text-muted-foreground">
+                No notifications yet.
+              </p>
+              <p className="text-xxs text-muted-foreground">
+                Add a rule to POST a Slack webhook when a release is created,
+                its date changes, it&apos;s released, or a task fails.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {notifications.map((n) => (
+                <NotificationRow
+                  key={n._key}
+                  notification={n}
+                  globalWebhookUrl={globalWebhookUrl}
+                  onChange={(updated) =>
+                    setNotifications((prev) =>
+                      prev.map((x) => (x._key === updated._key ? updated : x)),
+                    )
+                  }
+                  onDelete={() =>
+                    setNotifications((prev) =>
+                      prev.filter((x) => x._key !== n._key),
+                    )
+                  }
+                />
+              ))}
+            </div>
           )}
         </section>
 

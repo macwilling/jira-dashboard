@@ -9,6 +9,7 @@ import {
   autoDispatchPendingInstances,
   cascadeReleaseDateChange,
 } from "@/lib/releases/dispatcher";
+import { fireReleaseEvent } from "@/lib/releases/notifications";
 import type {
   JiraVersionPayload,
   JiraVersionWebhookEvent,
@@ -128,6 +129,37 @@ export async function POST(req: NextRequest) {
         (err) => console.warn("[webhook] autoDispatchPendingInstances failed", err)
       );
     }
+
+    // Notification events. fireReleaseEvent swallows its own errors, so these
+    // can run in parallel without risking the 200 response.
+    //
+    // release.created: first time we've seen this version id, OR Jira tells us
+    //   it's a create event explicitly. Using both signals avoids missing it
+    //   when upstream automation rewrites the event type.
+    // release.date_changed: the release previously existed and the date moved
+    //   (including null → date; that's a meaningful state change for Slack).
+    // release.released: explicit release event from Jira, or the released flag
+    //   transitioned false → true.
+    const wasNew = !previousRelease;
+    const releasedTransitioned =
+      !!previousRelease && !previousRelease.released && !!release.released;
+    const events: Promise<void>[] = [];
+    if (wasNew || webhookEvent === "jira:version_created") {
+      events.push(fireReleaseEvent({ release, eventType: "release.created" }));
+    }
+    if (!wasNew && previousDate !== newDate) {
+      events.push(
+        fireReleaseEvent({
+          release,
+          eventType: "release.date_changed",
+          event: { oldDate: previousDate, newDate },
+        }),
+      );
+    }
+    if (releasedTransitioned || webhookEvent === "jira:version_released") {
+      events.push(fireReleaseEvent({ release, eventType: "release.released" }));
+    }
+    await Promise.all(events);
 
     return NextResponse.json({
       ok: true,

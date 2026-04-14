@@ -16,6 +16,8 @@ import {
   listTaskInstances,
   setTaskInstanceExternalRef,
   setTaskInstanceDispatchError,
+  clearTaskInstanceDispatchError,
+  clearTaskInstanceExternalRef,
   setTaskInstanceDueDate,
   updateTaskInstanceStatus,
 } from "./templates-store";
@@ -23,13 +25,18 @@ import {
   createGoogleTask,
   createCalendarEvent,
   getGoogleTaskStatus,
+  getGoogleTaskDetails,
   updateGoogleTaskDue,
   getCalendarEventStatus,
+  getCalendarEventDetails,
   updateCalendarEventDate,
   getGoogleCredentials,
 } from "@/lib/google/client";
+import type { CalendarEventDetails } from "@/lib/google/client";
 import { getConfig } from "@/lib/config";
 import { addDays } from "./matcher";
+import { getRelease } from "./store";
+import { fireReleaseEvent } from "./notifications";
 import type { ReleaseTaskInstance } from "./types";
 
 const DEFAULT_TIMEZONE = "America/New_York";
@@ -51,6 +58,19 @@ function isDispatchable(i: ReleaseTaskInstance): boolean {
   return i.actionType === "google_task" || i.actionType === "calendar_event";
 }
 
+async function fireTaskFailed(
+  instance: ReleaseTaskInstance,
+  error: string,
+): Promise<void> {
+  const release = await getRelease(instance.releaseId).catch(() => null);
+  if (!release) return;
+  await fireReleaseEvent({
+    release,
+    eventType: "task.failed",
+    event: { taskLabel: instance.label, error },
+  });
+}
+
 /**
  * Dispatch a single pending task instance. Persists external ref on success
  * and last_dispatch_error on failure. Safe to call concurrently; never throws.
@@ -58,7 +78,8 @@ function isDispatchable(i: ReleaseTaskInstance): boolean {
 export async function dispatchInstance(
   instance: ReleaseTaskInstance,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (instance.status !== "pending") return { ok: true };
+  // Already dispatched — don't duplicate the Google resource.
+  if (instance.externalId) return { ok: true };
   if (!isDispatchable(instance)) return { ok: true };
 
   try {
@@ -77,6 +98,7 @@ export async function dispatchInstance(
       if (!instance.dueDate) {
         const err = "No due date — calendar event needs a date";
         await setTaskInstanceDispatchError(instance.id, err);
+        await fireTaskFailed(instance, err);
         return { ok: false, error: err };
       }
       const timeZone = await resolveTimeZone();
@@ -97,6 +119,7 @@ export async function dispatchInstance(
   } catch (e) {
     const err = (e as Error).message;
     await setTaskInstanceDispatchError(instance.id, err).catch(() => {});
+    await fireTaskFailed(instance, err);
     return { ok: false, error: err };
   }
 }
@@ -116,8 +139,10 @@ export async function autoDispatchPendingInstances(
   if (!creds) return;
 
   const instances = await listTaskInstances(releaseId);
-  const pending = instances.filter((i) => i.status === "pending" && isDispatchable(i));
-  for (const instance of pending) {
+  const needsDispatch = instances.filter(
+    (i) => !i.externalId && isDispatchable(i),
+  );
+  for (const instance of needsDispatch) {
     await dispatchInstance(instance);
   }
 }
@@ -145,8 +170,6 @@ export async function cascadeReleaseDateChange(
   const creds = await getGoogleCredentials().catch(() => null);
 
   for (const instance of instances) {
-    if (instance.status !== "pending") continue;
-
     const newDueDate = newReleaseDate
       ? addDays(newReleaseDate, instance.dayOffset)
       : null;
@@ -233,4 +256,156 @@ export async function cascadeReleaseDateChange(
       await setTaskInstanceDispatchError(instance.id, err).catch(() => {});
     }
   }
+}
+
+/**
+ * Probe Google for every dispatched task/event in the release and update local
+ * sync state. Used by the "Refresh sync" button on the detail page and the
+ * list page sync summary.
+ *
+ * Error prefixes drive the UI's SyncState pills:
+ *   - "MISSING: ..." → remote was deleted; external_id cleared so retry will recreate
+ *   - "DRIFT: ..."   → remote still exists but date/time diverged
+ *   - no error       → synced
+ *
+ * Never throws at the top level — per-row failures are persisted.
+ */
+export async function refreshSyncStatus(releaseId: string): Promise<void> {
+  const instances = await listTaskInstances(releaseId);
+  const creds = await getGoogleCredentials().catch(() => null);
+  if (!creds) return;
+
+  for (const instance of instances) {
+    if (!isDispatchable(instance)) continue;
+    if (!instance.externalId) continue; // nothing dispatched to check
+
+    try {
+      if (instance.actionType === "google_task") {
+        const details = await getGoogleTaskDetails(
+          getTaskListId(instance),
+          instance.externalId,
+        );
+        if (!details) {
+          await clearTaskInstanceExternalRef(instance.id);
+          await setTaskInstanceDispatchError(
+            instance.id,
+            "MISSING: Task was deleted from Google Tasks",
+          );
+          continue;
+        }
+        if (details.due !== instance.dueDate) {
+          await setTaskInstanceDispatchError(
+            instance.id,
+            `DRIFT: Google due date ${details.due ?? "(none)"} ≠ expected ${instance.dueDate ?? "(none)"}`,
+          );
+          continue;
+        }
+        await clearTaskInstanceDispatchError(instance.id);
+      } else if (instance.actionType === "calendar_event") {
+        const details = await getCalendarEventDetails(
+          getCalendarId(instance),
+          instance.externalId,
+        );
+        if (!details || details.status === "cancelled") {
+          await clearTaskInstanceExternalRef(instance.id);
+          await setTaskInstanceDispatchError(
+            instance.id,
+            "MISSING: Event was deleted from Google Calendar",
+          );
+          continue;
+        }
+        const drift = detectCalendarDrift(instance, details);
+        if (drift) {
+          await setTaskInstanceDispatchError(instance.id, `DRIFT: ${drift}`);
+          continue;
+        }
+        await clearTaskInstanceDispatchError(instance.id);
+      }
+    } catch (e) {
+      await setTaskInstanceDispatchError(
+        instance.id,
+        `Refresh failed: ${(e as Error).message}`,
+      ).catch(() => {});
+    }
+  }
+}
+
+/**
+ * Force-update Google to match this row's expected schedule. Used by the
+ * "Push to Google" button on drifted rows — Jira is the source of truth for
+ * release dates, so drift is corrected by re-asserting the Jira-derived date
+ * in Google rather than accepting the manual edit in Google.
+ */
+export async function pushInstanceToGoogle(
+  instance: ReleaseTaskInstance,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!instance.externalId) {
+    return { ok: false, error: "No external reference" };
+  }
+  if (!isDispatchable(instance)) return { ok: true };
+
+  try {
+    if (instance.actionType === "google_task") {
+      await updateGoogleTaskDue(
+        getTaskListId(instance),
+        instance.externalId,
+        instance.dueDate,
+      );
+      await clearTaskInstanceDispatchError(instance.id);
+      return { ok: true };
+    }
+
+    if (instance.actionType === "calendar_event") {
+      if (!instance.dueDate) {
+        return { ok: false, error: "No expected date to push" };
+      }
+      const timeZone = await resolveTimeZone();
+      await updateCalendarEventDate(
+        getCalendarId(instance),
+        instance.externalId,
+        {
+          date: instance.dueDate,
+          startTime: instance.allDay ? null : instance.startTime,
+          durationMinutes: instance.durationMinutes,
+          timeZone,
+        },
+      );
+      await clearTaskInstanceDispatchError(instance.id);
+      return { ok: true };
+    }
+
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+function detectCalendarDrift(
+  instance: ReleaseTaskInstance,
+  event: CalendarEventDetails,
+): string | null {
+  if (instance.allDay) {
+    if (event.startDateTimeDate) {
+      return `Event is now timed, expected all-day on ${instance.dueDate ?? "(none)"}`;
+    }
+    if (event.startDate !== instance.dueDate) {
+      return `All-day event on ${event.startDate ?? "(none)"} ≠ expected ${instance.dueDate ?? "(none)"}`;
+    }
+    return null;
+  }
+
+  // Timed event: compare both date and "HH:MM" against expected.
+  if (event.startDate) {
+    return `Event is now all-day on ${event.startDate}, expected timed on ${instance.dueDate ?? "(none)"}`;
+  }
+  if (!event.startDateTimeDate || !event.startDateTimeTime) {
+    return `Event has no start time`;
+  }
+  if (
+    event.startDateTimeDate !== instance.dueDate ||
+    event.startDateTimeTime !== instance.startTime
+  ) {
+    return `Event at ${event.startDateTimeDate} ${event.startDateTimeTime} ≠ expected ${instance.dueDate ?? "(none)"} ${instance.startTime ?? "(none)"}`;
+  }
+  return null;
 }

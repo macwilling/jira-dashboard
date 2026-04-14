@@ -6,20 +6,27 @@ import Link from "next/link";
 import {
   Loader2,
   RefreshCw,
-  CheckCircle2,
-  Circle,
-  MinusCircle,
   Calendar,
   Package,
-  Play,
   ExternalLink,
   AlertTriangle,
-  ArrowRight,
   Trash2,
+  CheckCircle2,
+  Circle,
+  XCircle,
+  Ghost,
+  RotateCcw,
+  Minus,
+  ArrowUpToLine,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -35,21 +42,15 @@ import type {
   ReleaseTemplate,
   ReleaseTaskInstance,
   ActionType,
-  TaskInstanceStatus,
 } from "@/lib/releases/types";
+import type { SyncState, SyncSummary } from "@/lib/releases/sync-state";
+
+type InstanceWithState = ReleaseTaskInstance & { syncState: SyncState };
 
 const ACTION_LABELS: Record<ActionType, string> = {
   manual: "Manual",
   google_task: "Google Task",
   calendar_event: "Calendar",
-  slack_message: "Slack",
-};
-
-const ACTION_DISPATCH_LABEL: Record<ActionType, string> = {
-  manual: "",
-  google_task: "Create task",
-  calendar_event: "Create event",
-  slack_message: "Send message",
 };
 
 function dateOnly(iso: string): string {
@@ -76,121 +77,101 @@ interface DateMeta {
 }
 
 function dateMeta(iso: string | null): DateMeta {
-  if (!iso) return { label: "No date", tone: "none" };
+  if (!iso) return { label: "—", tone: "none" };
   const pretty = formatShortDate(iso);
   const d = daysFromToday(iso);
-  if (d < 0) return { label: `${pretty} · ${Math.abs(d)}d overdue`, tone: "overdue" };
-  if (d === 0) return { label: `${pretty} · today`, tone: "today" };
-  if (d <= 3) return { label: `${pretty} · in ${d}d`, tone: "soon" };
-  return { label: `${pretty} · in ${d}d`, tone: "future" };
+  if (d < 0) return { label: pretty, tone: "overdue" };
+  if (d === 0) return { label: pretty, tone: "today" };
+  if (d <= 3) return { label: pretty, tone: "soon" };
+  return { label: pretty, tone: "future" };
 }
 
-function DateChip({ dueDate, done }: { dueDate: string | null; done: boolean }) {
-  const meta = dateMeta(dueDate);
-  const tone = done ? "none" : meta.tone;
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded font-mono tabular-nums shrink-0",
-        tone === "overdue" && "bg-red-500/10 text-red-600 dark:text-red-400",
-        tone === "today" && "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-        tone === "soon" && "bg-amber-500/10 text-amber-700/80 dark:text-amber-400/80",
-        tone === "future" && "bg-muted text-muted-foreground",
-        tone === "none" && "bg-muted/50 text-muted-foreground/70",
-      )}
-    >
-      <Calendar className="h-3 w-3" />
-      {meta.label}
-    </span>
-  );
+interface SyncMeta {
+  label: string;
+  icon: typeof Circle;
+  /** Color for icon + state label text. */
+  accentClass: string;
+  /** Left-border accent for problem rows; empty for calm rows. */
+  borderClass: string;
+  /** Very subtle row background for problem rows; empty for calm rows. */
+  rowBgClass: string;
+  tone: "ok" | "warn" | "bad" | "neutral";
 }
 
-function StatusToggle({
-  status,
-  onChange,
-  disabled,
-}: {
-  status: TaskInstanceStatus;
-  onChange: (next: TaskInstanceStatus) => void;
-  disabled?: boolean;
-}) {
-  const opts: { value: TaskInstanceStatus; icon: typeof Circle; label: string }[] = [
-    { value: "pending", icon: Circle, label: "Pending" },
-    { value: "done", icon: CheckCircle2, label: "Done" },
-    { value: "skipped", icon: MinusCircle, label: "Skip" },
-  ];
-  return (
-    <div
-      role="group"
-      className="inline-flex rounded-md border bg-background overflow-hidden shrink-0"
-    >
-      {opts.map(({ value, icon: Icon, label }) => {
-        const active = status === value;
-        return (
-          <button
-            key={value}
-            type="button"
-            onClick={() => onChange(value)}
-            disabled={disabled}
-            title={label}
-            aria-label={label}
-            aria-pressed={active}
-            className={cn(
-              "flex items-center justify-center h-7 w-7 transition-colors disabled:opacity-50",
-              "border-r last:border-r-0",
-              active && value === "pending" && "bg-muted text-foreground",
-              active && value === "done" && "bg-green-500/15 text-green-700 dark:text-green-400",
-              active && value === "skipped" && "bg-muted text-muted-foreground",
-              !active && "text-muted-foreground hover:bg-muted hover:text-foreground",
-            )}
-          >
-            <Icon className="h-3.5 w-3.5" />
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+const SYNC_META: Record<SyncState, SyncMeta> = {
+  synced: {
+    label: "Synced",
+    icon: CheckCircle2,
+    accentClass: "text-green-600 dark:text-green-500",
+    borderClass: "",
+    rowBgClass: "",
+    tone: "ok",
+  },
+  pending: {
+    label: "Pending",
+    icon: Circle,
+    accentClass: "text-muted-foreground/60",
+    borderClass: "",
+    rowBgClass: "",
+    tone: "neutral",
+  },
+  failed: {
+    label: "Failed",
+    icon: XCircle,
+    accentClass: "text-red-600 dark:text-red-500",
+    borderClass: "border-l-2 border-red-500",
+    rowBgClass: "bg-red-500/[0.03]",
+    tone: "bad",
+  },
+  missing: {
+    label: "Missing",
+    icon: Ghost,
+    accentClass: "text-red-600 dark:text-red-500",
+    borderClass: "border-l-2 border-red-500",
+    rowBgClass: "bg-red-500/[0.03]",
+    tone: "bad",
+  },
+  drifted: {
+    label: "Drifted",
+    icon: AlertTriangle,
+    accentClass: "text-amber-600 dark:text-amber-500",
+    borderClass: "border-l-2 border-amber-500",
+    rowBgClass: "bg-amber-500/[0.03]",
+    tone: "warn",
+  },
+  manual: {
+    label: "Manual",
+    icon: Minus,
+    accentClass: "text-muted-foreground/50",
+    borderClass: "",
+    rowBgClass: "",
+    tone: "neutral",
+  },
+};
 
-function ActionBadge({ type }: { type: ActionType }) {
-  if (type === "manual") {
-    return (
-      <Badge variant="outline" className="text-xxs h-4 px-1.5 text-muted-foreground">
-        {ACTION_LABELS[type]}
-      </Badge>
-    );
-  }
-  if (type === "slack_message") {
-    return (
-      <Badge variant="outline" className="text-xxs h-4 px-1.5 text-muted-foreground/60 border-dashed">
-        {ACTION_LABELS[type]} (n/a)
-      </Badge>
-    );
-  }
-  return (
-    <Badge variant="secondary" className="text-xxs h-4 px-1.5">
-      {ACTION_LABELS[type]}
-    </Badge>
-  );
+/** Strips the MISSING:/DRIFT: prefixes used internally for state derivation. */
+function prettyError(err: string | null): string | null {
+  if (!err) return null;
+  return err.replace(/^(MISSING|DRIFT):\s*/, "");
 }
 
 interface PhaseGroup {
   key: "before" | "release" | "after";
   title: string;
   subtitle: string;
-  items: ReleaseTaskInstance[];
+  items: InstanceWithState[];
 }
 
-function groupByPhase(instances: ReleaseTaskInstance[]): PhaseGroup[] {
-  const before: ReleaseTaskInstance[] = [];
-  const onDay: ReleaseTaskInstance[] = [];
-  const after: ReleaseTaskInstance[] = [];
+function groupByPhase(instances: InstanceWithState[]): PhaseGroup[] {
+  const before: InstanceWithState[] = [];
+  const onDay: InstanceWithState[] = [];
+  const after: InstanceWithState[] = [];
   for (const i of instances) {
     if (i.dayOffset < 0) before.push(i);
     else if (i.dayOffset === 0) onDay.push(i);
     else after.push(i);
   }
-  const sortAsc = (arr: ReleaseTaskInstance[]) =>
+  const sortAsc = (arr: InstanceWithState[]) =>
     arr.sort((a, b) => a.dayOffset - b.dayOffset);
   const groups: PhaseGroup[] = [
     { key: "before", title: "Before release", subtitle: "Prep work leading up to ship", items: sortAsc(before) },
@@ -206,11 +187,14 @@ export default function ReleasePage() {
   const [release, setRelease] = useState<Release | null>(null);
   const [matchedTemplate, setMatchedTemplate] = useState<ReleaseTemplate | null>(null);
   const [templateTaskCount, setTemplateTaskCount] = useState(0);
-  const [instances, setInstances] = useState<ReleaseTaskInstance[]>([]);
+  const [instances, setInstances] = useState<InstanceWithState[]>([]);
+  const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [regenOpen, setRegenOpen] = useState(false);
-  const [dispatchingId, setDispatchingId] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [pushingId, setPushingId] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [purging, setPurging] = useState(false);
@@ -224,6 +208,7 @@ export default function ReleasePage() {
         setMatchedTemplate(data.matchedTemplate);
         setTemplateTaskCount(data.matchedTemplateTaskCount ?? 0);
         setInstances(data.taskInstances ?? []);
+        setSyncSummary(data.syncSummary ?? null);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -231,31 +216,25 @@ export default function ReleasePage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleSetStatus = async (
-    instance: ReleaseTaskInstance,
-    next: TaskInstanceStatus,
-  ) => {
-    if (next === instance.status) return;
-    const prevStatus = instance.status;
-    setInstances((prev) =>
-      prev.map((i) => (i.id === instance.id ? { ...i, status: next } : i)),
-    );
+  const handleRefreshSync = async () => {
+    setRefreshing(true);
+    setRowErrors({});
     try {
-      const res = await fetch(`/api/releases/${id}/tasks/${instance.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: next }),
-      });
-      if (!res.ok) throw new Error("failed");
-    } catch {
-      setInstances((prev) =>
-        prev.map((i) => (i.id === instance.id ? { ...i, status: prevStatus } : i)),
-      );
+      const res = await fetch(`/api/releases/${id}/refresh-sync`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setInstances(data.taskInstances ?? []);
+        setSyncSummary(data.syncSummary ?? null);
+      } else {
+        setError(data.error || "Refresh failed");
+      }
+    } finally {
+      setRefreshing(false);
     }
   };
 
-  const handleDispatch = async (instance: ReleaseTaskInstance) => {
-    setDispatchingId(instance.id);
+  const handleRetry = async (instance: InstanceWithState) => {
+    setRetryingId(instance.id);
     setRowErrors((e) => {
       const next = { ...e };
       delete next[instance.id];
@@ -268,25 +247,40 @@ export default function ReleasePage() {
       );
       const data = await res.json();
       if (res.ok) {
-        setInstances((prev) =>
-          prev.map((i) =>
-            i.id === instance.id
-              ? {
-                  ...i,
-                  status: "done",
-                  externalId: data.externalId ?? i.externalId,
-                  externalUrl: data.externalUrl ?? i.externalUrl,
-                }
-              : i,
-          ),
-        );
+        // Reload to pick up authoritative sync state.
+        load();
       } else {
         setRowErrors((e) => ({ ...e, [instance.id]: data.error || "Dispatch failed" }));
       }
     } catch (e) {
       setRowErrors((errs) => ({ ...errs, [instance.id]: (e as Error).message }));
     } finally {
-      setDispatchingId(null);
+      setRetryingId(null);
+    }
+  };
+
+  const handlePushToGoogle = async (instance: InstanceWithState) => {
+    setPushingId(instance.id);
+    setRowErrors((e) => {
+      const next = { ...e };
+      delete next[instance.id];
+      return next;
+    });
+    try {
+      const res = await fetch(
+        `/api/releases/${id}/tasks/${instance.id}/push-to-google`,
+        { method: "POST" },
+      );
+      const data = await res.json();
+      if (res.ok) {
+        load();
+      } else {
+        setRowErrors((e) => ({ ...e, [instance.id]: data.error || "Push failed" }));
+      }
+    } catch (e) {
+      setRowErrors((errs) => ({ ...errs, [instance.id]: (e as Error).message }));
+    } finally {
+      setPushingId(null);
     }
   };
 
@@ -331,8 +325,9 @@ export default function ReleasePage() {
       const res = await fetch(`/api/releases/${id}/tasks`, { method: "POST" });
       const data = await res.json();
       if (res.ok) {
-        setInstances(data.taskInstances ?? []);
+        // Re-fetch to get fresh syncState values.
         setRegenOpen(false);
+        load();
       } else {
         setError(data.error || "Failed to regenerate tasks");
       }
@@ -341,15 +336,18 @@ export default function ReleasePage() {
     }
   };
 
-  const counts = useMemo(() => {
-    const pending = instances.filter((i) => i.status === "pending").length;
-    const done = instances.filter((i) => i.status === "done").length;
-    const skipped = instances.filter((i) => i.status === "skipped").length;
-    return { pending, done, skipped, total: instances.length };
-  }, [instances]);
-
   const parsed = release ? parseReleaseName(release.name) : null;
   const groups = useMemo(() => groupByPhase(instances), [instances]);
+
+  // Count pending dispatches that are rebuilt on regenerate (used in the dialog).
+  const pendingRegenCount = useMemo(
+    () => instances.filter((i) => i.syncState === "pending" || i.syncState === "failed").length,
+    [instances],
+  );
+  const syncedKeepCount = useMemo(
+    () => instances.filter((i) => i.syncState === "synced" || i.syncState === "drifted").length,
+    [instances],
+  );
 
   if (loading) {
     return (
@@ -371,19 +369,77 @@ export default function ReleasePage() {
     );
   }
 
+  const jiraUrl = process.env.NEXT_PUBLIC_JIRA_URL
+    ? `${process.env.NEXT_PUBLIC_JIRA_URL}/projects/IST/versions/${release.id}`
+    : null;
+
   const actions = (
     <div className="ml-auto flex items-center gap-1">
+      {jiraUrl && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <a
+                href={jiraUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 h-7 px-2 text-xs rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              />
+            }
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            Edit in Jira
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
+            Open this release&apos;s version page in Jira. Jira is the source of
+            truth — changes there flow back via webhook and cascade to Google.
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {!release.deletedAt && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs gap-1.5 text-muted-foreground"
+                onClick={handleRefreshSync}
+                disabled={refreshing}
+              />
+            }
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+            Refresh sync
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
+            Re-checks each row against Google Tasks and Google Calendar to catch
+            events that were deleted, moved, or re-dated. Read-only — doesn&apos;t
+            change anything in Google.
+          </TooltipContent>
+        </Tooltip>
+      )}
       {matchedTemplate && !release.deletedAt && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 text-xs gap-1.5 text-muted-foreground"
-          onClick={() => setRegenOpen(true)}
-          disabled={regenerating}
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-          Regenerate
-        </Button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs gap-1.5 text-muted-foreground"
+                onClick={() => setRegenOpen(true)}
+                disabled={regenerating}
+              />
+            }
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Rebuild
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
+            Rebuilds the checklist from the current template. Rows already
+            created in Google are kept; undispatched rows are replaced.
+          </TooltipContent>
+        </Tooltip>
       )}
       {release.deletedAt && (
         <Button
@@ -403,8 +459,6 @@ export default function ReleasePage() {
       )}
     </div>
   );
-
-  const pct = counts.total ? Math.round((counts.done / counts.total) * 100) : 0;
 
   return (
     <AppShell title={<span className="font-mono">{release.name}</span>} actions={actions}>
@@ -427,7 +481,7 @@ export default function ReleasePage() {
           </div>
         )}
 
-        {/* Header: meta + progress summary */}
+        {/* Header: meta + sync summary */}
         <section className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-start">
           <div className="space-y-2 min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -476,26 +530,8 @@ export default function ReleasePage() {
             </div>
           </div>
 
-          {counts.total > 0 && (
-            <div className="rounded-lg border bg-muted/20 px-4 py-3 min-w-[220px]">
-              <div className="flex items-baseline justify-between gap-3 mb-2">
-                <span className="text-xs uppercase tracking-wide text-muted-foreground">Progress</span>
-                <span className="text-sm font-semibold tabular-nums">
-                  {counts.done}/{counts.total}
-                </span>
-              </div>
-              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                <div
-                  className="h-full bg-green-500 transition-all"
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              <div className="flex gap-3 mt-2 text-xxs text-muted-foreground tabular-nums">
-                <span>{counts.pending} pending</span>
-                <span>{counts.done} done</span>
-                {counts.skipped > 0 && <span>{counts.skipped} skipped</span>}
-              </div>
-            </div>
+          {syncSummary && syncSummary.total > 0 && (
+            <SyncSummaryCard summary={syncSummary} />
           )}
         </section>
 
@@ -510,89 +546,21 @@ export default function ReleasePage() {
                     <p className="text-xxs text-muted-foreground">{group.subtitle}</p>
                   </div>
                   <span className="text-xxs text-muted-foreground tabular-nums">
-                    {group.items.filter((i) => i.status === "done").length}/{group.items.length}
+                    {group.items.length}
                   </span>
                 </div>
                 <div className="rounded-lg border divide-y overflow-hidden">
-                  {group.items.map((instance) => {
-                    const canDispatch =
-                      instance.status === "pending" &&
-                      (instance.actionType === "google_task" ||
-                        instance.actionType === "calendar_event");
-                    const hasExternal = !!instance.externalUrl;
-                    const rowError = rowErrors[instance.id] ?? instance.lastDispatchError;
-                    return (
-                      <div key={instance.id} className="group">
-                        <div className="flex items-center gap-3 px-3 py-2.5">
-                          <StatusToggle
-                            status={instance.status}
-                            onChange={(next) => handleSetStatus(instance, next)}
-                            disabled={dispatchingId === instance.id}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <p
-                                className={cn(
-                                  "text-sm truncate",
-                                  instance.status === "done" && "line-through text-muted-foreground",
-                                  instance.status === "skipped" && "text-muted-foreground",
-                                )}
-                              >
-                                {instance.label}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-2 mt-0.5 text-xxs text-muted-foreground">
-                              <ActionBadge type={instance.actionType} />
-                              {instance.dayOffset !== 0 && (
-                                <span className="tabular-nums font-mono">
-                                  {instance.dayOffset > 0 ? "+" : ""}
-                                  {instance.dayOffset}d
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <DateChip
-                            dueDate={instance.dueDate}
-                            done={instance.status === "done" || instance.status === "skipped"}
-                          />
-                          {hasExternal && (
-                            <a
-                              href={instance.externalUrl!}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                              title="Open in Google"
-                            >
-                              <ExternalLink className="h-3 w-3" />
-                              Open
-                            </a>
-                          )}
-                          {canDispatch && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs gap-1.5 shrink-0"
-                              onClick={() => handleDispatch(instance)}
-                              disabled={dispatchingId === instance.id}
-                            >
-                              {dispatchingId === instance.id ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : (
-                                <Play className="h-3 w-3" />
-                              )}
-                              {ACTION_DISPATCH_LABEL[instance.actionType]}
-                            </Button>
-                          )}
-                        </div>
-                        {rowError && (
-                          <div className="px-3 pb-2 pl-[calc(0.75rem+84px+0.75rem)] flex items-start gap-1.5 text-xs text-destructive">
-                            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                            <span>{rowError}</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {group.items.map((instance) => (
+                    <TaskRow
+                      key={instance.id}
+                      instance={instance}
+                      retrying={retryingId === instance.id}
+                      pushing={pushingId === instance.id}
+                      rowError={rowErrors[instance.id]}
+                      onRetry={() => handleRetry(instance)}
+                      onPushToGoogle={() => handlePushToGoogle(instance)}
+                    />
+                  ))}
                 </div>
               </section>
             ))}
@@ -624,51 +592,240 @@ export default function ReleasePage() {
         )}
       </main>
 
-      {/* Regenerate confirm */}
+      {/* Rebuild confirm */}
       <Dialog open={regenOpen} onOpenChange={setRegenOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Regenerate tasks</DialogTitle>
+            <DialogTitle>Rebuild checklist?</DialogTitle>
             <DialogDescription>
-              This rebuilds the pending checklist from{" "}
+              Rebuilds this release&apos;s checklist from the{" "}
               <span className="font-medium text-foreground">
                 {matchedTemplate?.name}
-              </span>
-              . Existing <span className="font-medium text-foreground">done</span> and{" "}
-              <span className="font-medium text-foreground">skipped</span> tasks are kept.
-              Any new Google Task or Calendar rows will be dispatched automatically.
+              </span>{" "}
+              template. Useful after the template changes, or to reset rows
+              that got into a bad state.
             </DialogDescription>
           </DialogHeader>
-          <div className="rounded-md border bg-muted/30 p-3 space-y-1.5 text-xs">
-            <div className="flex items-center gap-2">
-              <ArrowRight className="h-3 w-3 text-muted-foreground" />
-              <span>Delete <span className="font-mono tabular-nums">{counts.pending}</span> pending task{counts.pending === 1 ? "" : "s"}</span>
+
+          <div className="space-y-3 text-sm">
+            <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+              <div className="flex items-start gap-2">
+                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-green-600 shrink-0" />
+                <div>
+                  <span className="font-medium tabular-nums">{syncedKeepCount}</span>{" "}
+                  row{syncedKeepCount === 1 ? "" : "s"} already in Google{" "}
+                  <span className="text-muted-foreground">— kept as-is</span>
+                </div>
+              </div>
+              <div className="flex items-start gap-2">
+                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-muted-foreground shrink-0" />
+                <div>
+                  <span className="font-medium tabular-nums">{pendingRegenCount}</span>{" "}
+                  row{pendingRegenCount === 1 ? "" : "s"} not yet in Google{" "}
+                  <span className="text-muted-foreground">— removed</span>
+                </div>
+              </div>
+              <div className="flex items-start gap-2">
+                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-600 shrink-0" />
+                <div>
+                  <span className="font-medium tabular-nums">{templateTaskCount}</span>{" "}
+                  fresh row{templateTaskCount === 1 ? "" : "s"} from template{" "}
+                  <span className="text-muted-foreground">
+                    — created and dispatched to Google automatically
+                  </span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <ArrowRight className="h-3 w-3 text-muted-foreground" />
-              <span>
-                Keep <span className="font-mono tabular-nums">{counts.done}</span> done
-                {counts.skipped > 0 && <>, <span className="font-mono tabular-nums">{counts.skipped}</span> skipped</>}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <ArrowRight className="h-3 w-3 text-muted-foreground" />
-              <span>
-                Create <span className="font-mono tabular-nums">{templateTaskCount}</span> new task{templateTaskCount === 1 ? "" : "s"} from template
-              </span>
-            </div>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Existing Google Tasks and Calendar events aren&apos;t touched —
+              only this app&apos;s checklist. If you want to remove a Google
+              item, delete it in Google and click{" "}
+              <span className="font-medium text-foreground">Refresh sync</span>.
+            </p>
           </div>
+
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRegenOpen(false)} disabled={regenerating}>
               Cancel
             </Button>
             <Button onClick={handleRegenerate} disabled={regenerating}>
               {regenerating && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
-              Regenerate
+              Rebuild
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </AppShell>
+  );
+}
+
+function TaskRow({
+  instance,
+  retrying,
+  pushing,
+  rowError,
+  onRetry,
+  onPushToGoogle,
+}: {
+  instance: InstanceWithState;
+  retrying: boolean;
+  pushing: boolean;
+  rowError: string | undefined;
+  onRetry: () => void;
+  onPushToGoogle: () => void;
+}) {
+  const state = instance.syncState;
+  const meta = SYNC_META[state];
+  const Icon = meta.icon;
+  const canRetry = state === "failed" || state === "missing";
+  const canPush = state === "drifted";
+  const hasExternal = !!instance.externalUrl;
+  const detailError = prettyError(rowError ?? instance.lastDispatchError);
+  const showError = detailError && meta.tone !== "ok" && meta.tone !== "neutral";
+  const date = dateMeta(instance.dueDate);
+  const dateText = !instance.allDay && instance.startTime
+    ? `${date.label} ${instance.startTime}`
+    : date.label;
+
+  return (
+    <div
+      className={cn(
+        "grid grid-cols-[20px_minmax(0,1fr)_140px_84px_28px_112px] items-center gap-3 px-4 py-2.5 transition-colors",
+        meta.borderClass,
+        meta.rowBgClass,
+      )}
+    >
+      {/* Status icon */}
+      <Icon className={cn("h-4 w-4 shrink-0", meta.accentClass)} aria-label={meta.label} />
+
+      {/* Label + secondary line */}
+      <div className="min-w-0">
+        <div className="text-sm text-foreground truncate">{instance.label}</div>
+        <div className="text-xs text-muted-foreground truncate">
+          {ACTION_LABELS[instance.actionType]}
+          {instance.dayOffset !== 0 && (
+            <> · {instance.dayOffset > 0 ? "+" : ""}{instance.dayOffset}d</>
+          )}
+        </div>
+      </div>
+
+      {/* Date */}
+      <div className="text-xs text-muted-foreground font-mono tabular-nums text-right">
+        {dateText}
+      </div>
+
+      {/* State label — colored for problem states, muted otherwise */}
+      <div className={cn("text-xs text-right font-medium", meta.accentClass)}>
+        {meta.label}
+      </div>
+
+      {/* Open link — icon-only, always same column for alignment */}
+      <div className="flex justify-center">
+        {hasExternal && (
+          <a
+            href={instance.externalUrl!}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center h-7 w-7 text-muted-foreground/60 hover:text-foreground transition-colors rounded"
+            title="Open in Google"
+            aria-label="Open in Google"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        )}
+      </div>
+
+      {/* Primary action — Retry / Accept / nothing */}
+      <div className="flex justify-end">
+        {canRetry ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs gap-1.5 px-2.5 w-full"
+            onClick={onRetry}
+            disabled={retrying}
+          >
+            {retrying ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RotateCcw className="h-3 w-3" />
+            )}
+            Retry
+          </Button>
+        ) : canPush ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs gap-1.5 px-2.5 w-full border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+                  onClick={onPushToGoogle}
+                  disabled={pushing}
+                />
+              }
+            >
+              {pushing ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <ArrowUpToLine className="h-3 w-3" />
+              )}
+              Push to Google
+            </TooltipTrigger>
+            <TooltipContent side="left" className="max-w-xs text-xs leading-snug">
+              Overwrites the Google event with the expected date/time (derived
+              from the Jira release date). Use to re-assert Jira as the source
+              of truth when someone edited the event in Google.
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
+
+      {/* Error detail — spans from label column across all trailing columns */}
+      {showError && (
+        <div className={cn("col-start-2 col-span-5 text-xs", meta.accentClass)}>
+          {detailError}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SyncSummaryCard({ summary }: { summary: SyncSummary }) {
+  const tracked = summary.total - summary.manual;
+  const issues = [
+    summary.failed && { n: summary.failed, label: "failed", bad: true },
+    summary.missing && { n: summary.missing, label: "missing", bad: true },
+    summary.drifted && { n: summary.drifted, label: "drifted", bad: false },
+    summary.pending && { n: summary.pending, label: "pending", bad: false },
+  ].filter(Boolean) as { n: number; label: string; bad: boolean }[];
+
+  return (
+    <div className="flex items-baseline gap-3 min-w-[200px] justify-end">
+      <div className="text-right">
+        <div className="text-2xl font-semibold tabular-nums leading-none">
+          {summary.synced}
+          <span className="text-muted-foreground/60 text-lg font-normal">
+            {" "}/ {tracked}
+          </span>
+        </div>
+        <div className="text-xs text-muted-foreground mt-1">synced</div>
+      </div>
+      {issues.length > 0 && (
+        <div className="border-l pl-3 text-xs text-muted-foreground space-y-0.5">
+          {issues.map((i) => (
+            <div
+              key={i.label}
+              className={cn(
+                "tabular-nums",
+                i.bad && "text-red-600 dark:text-red-500",
+              )}
+            >
+              {i.n} {i.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

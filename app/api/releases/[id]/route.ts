@@ -6,6 +6,7 @@ import {
   listTemplateTasks,
 } from "@/lib/releases/templates-store";
 import { matchTemplate } from "@/lib/releases/matcher";
+import { computeSyncState, summarizeSyncStates } from "@/lib/releases/sync-state";
 
 export async function GET(
   _req: NextRequest,
@@ -28,11 +29,14 @@ export async function GET(
       matched ? listTemplateTasks(matched.id).then((t) => t.length) : Promise.resolve(0),
     ]);
 
+    const withState = instances.map((i) => ({ ...i, syncState: computeSyncState(i) }));
+
     return NextResponse.json({
       release,
       matchedTemplate: matched ?? null,
       matchedTemplateTaskCount: templateTaskCount,
-      taskInstances: instances,
+      taskInstances: withState,
+      syncSummary: summarizeSyncStates(instances),
     });
   } catch (e) {
     console.error("[GET /api/releases/[id]]", e);

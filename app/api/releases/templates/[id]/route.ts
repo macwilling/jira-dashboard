@@ -6,7 +6,15 @@ import {
   listTemplateTasks,
   replaceTemplateTasks,
 } from "@/lib/releases/templates-store";
-import type { ActionType, ReleaseType } from "@/lib/releases/types";
+import {
+  listTemplateNotifications,
+  replaceTemplateNotifications,
+} from "@/lib/releases/notifications-store";
+import type {
+  ActionType,
+  ReleaseEventType,
+  ReleaseType,
+} from "@/lib/releases/types";
 
 export async function GET(
   _req: NextRequest,
@@ -14,14 +22,15 @@ export async function GET(
 ) {
   const { id } = await params;
   try {
-    const [template, tasks] = await Promise.all([
+    const [template, tasks, notifications] = await Promise.all([
       getTemplate(id),
       listTemplateTasks(id),
+      listTemplateNotifications(id),
     ]);
     if (!template) {
       return NextResponse.json({ error: "not found" }, { status: 404 });
     }
-    return NextResponse.json({ template, tasks });
+    return NextResponse.json({ template, tasks, notifications });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
@@ -47,6 +56,11 @@ export async function PUT(
         durationMinutes?: number;
         actionConfig?: Record<string, unknown> | null;
       }>;
+      notifications?: Array<{
+        eventType: ReleaseEventType;
+        message: string;
+        webhookUrl?: string | null;
+      }>;
     };
 
     const template = await getTemplate(id);
@@ -63,12 +77,17 @@ export async function PUT(
       await replaceTemplateTasks(id, body.tasks);
     }
 
-    const [updated, tasks] = await Promise.all([
+    if (body.notifications !== undefined) {
+      await replaceTemplateNotifications(id, body.notifications);
+    }
+
+    const [updated, tasks, notifications] = await Promise.all([
       getTemplate(id),
       listTemplateTasks(id),
+      listTemplateNotifications(id),
     ]);
 
-    return NextResponse.json({ template: updated, tasks });
+    return NextResponse.json({ template: updated, tasks, notifications });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }

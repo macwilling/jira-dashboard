@@ -460,7 +460,7 @@ export async function listTaskInstances(
 async function insertInstanceFromTemplateTask(
   releaseId: string,
   templateId: string,
-  release: Pick<Release, "name" | "description" | "releaseDate">,
+  release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
   task: ReleaseTemplateTask,
   now: string,
 ): Promise<ReleaseTaskInstance> {
@@ -557,8 +557,11 @@ export async function regenerateTaskInstances(
   release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
   templateId: string,
 ): Promise<ReleaseTaskInstance[]> {
+  // Keep rows that actually dispatched to Google (have an external_id); drop
+  // everything else. Historical 'skipped' rows from the old UI fall into this
+  // bucket — the new status-page model has no user-settable skip.
   await d1Query(
-    `DELETE FROM release_task_instances WHERE release_id = ? AND status = 'pending'`,
+    `DELETE FROM release_task_instances WHERE release_id = ? AND external_id IS NULL`,
     [release.id]
   );
 
@@ -643,6 +646,31 @@ export async function setTaskInstanceDispatchError(
     [error, now, now, id],
   );
 }
+
+export async function clearTaskInstanceDispatchError(id: string): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE release_task_instances
+       SET last_dispatch_error = NULL, last_dispatch_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [now, now, id],
+  );
+}
+
+/**
+ * Clears external_id/url and resets status to 'pending' so a retry will re-dispatch.
+ * Used when the remote resource has been deleted and we want to recreate it.
+ */
+export async function clearTaskInstanceExternalRef(id: string): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE release_task_instances
+       SET external_id = NULL, external_url = NULL, status = 'pending', updated_at = ?
+     WHERE id = ?`,
+    [now, id],
+  );
+}
+
 
 export async function setTaskInstanceDueDate(
   id: string,

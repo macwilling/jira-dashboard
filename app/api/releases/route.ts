@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { listReleases } from "@/lib/releases/store";
 import { listTemplates, listTaskInstances } from "@/lib/releases/templates-store";
 import { matchTemplate } from "@/lib/releases/matcher";
+import { summarizeSyncStates } from "@/lib/releases/sync-state";
 
 // Hits Cloudflare D1 at request time — never prerender.
 export const dynamic = "force-dynamic";
@@ -17,14 +18,12 @@ export async function GET() {
       releases.map(async (release) => {
         const matched = matchTemplate(release.name, templates);
         const instances = await listTaskInstances(release.id);
-        const total = instances.length;
-        const done = instances.filter((i) => i.status === "done").length;
         return {
           ...release,
           matchedTemplate: matched
             ? { id: matched.id, name: matched.name }
             : null,
-          taskProgress: { total, done },
+          syncSummary: summarizeSyncStates(instances),
         };
       })
     );

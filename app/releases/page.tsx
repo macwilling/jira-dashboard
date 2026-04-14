@@ -11,22 +11,26 @@ import {
   Archive,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Trash2,
+  XCircle,
+  Ghost,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { cn } from "@/lib/utils";
 import type { Release } from "@/lib/releases/types";
+import type { SyncSummary } from "@/lib/releases/sync-state";
 import { parseReleaseName } from "@/lib/releases/matcher";
 
 interface ReleaseWithMeta extends Release {
   matchedTemplate: { id: string; name: string } | null;
-  taskProgress: { total: number; done: number };
+  syncSummary: SyncSummary;
 }
 
 type ScopeFilter = "all" | "upcoming" | "released" | "archived" | "deleted";
 type TemplateFilter = "all" | "has" | "none";
 
-type SortKey = "date" | "name" | "progress" | "status";
+type SortKey = "date" | "name" | "sync" | "status";
 type SortDir = "asc" | "desc";
 
 const SCOPE_LABEL: Record<ScopeFilter, string> = {
@@ -78,13 +82,9 @@ function relativeDate(iso: string | null, released: boolean): {
   return { label, subLabel: `in ${days}d`, tone: "future" };
 }
 
-function progressTone(done: number, total: number, dateTone: string, released: boolean) {
-  if (released || total === 0) return "neutral";
-  const pct = done / total;
-  if (dateTone === "overdue" && pct < 1) return "danger";
-  if (dateTone === "soon" && pct < 0.75) return "warn";
-  if (pct === 1) return "done";
-  return "neutral";
+/** How urgent a sync row appears, for sorting. Higher = needs more attention. */
+function syncUrgency(s: SyncSummary): number {
+  return s.missing * 100 + s.failed * 50 + s.drifted * 10 + s.pending;
 }
 
 export default function ReleasesPage() {
@@ -146,12 +146,9 @@ export default function ReleasesPage() {
         case "name":
           cmp = a.name.localeCompare(b.name);
           break;
-        case "progress": {
-          const pa = a.taskProgress.total === 0 ? -1 : a.taskProgress.done / a.taskProgress.total;
-          const pb = b.taskProgress.total === 0 ? -1 : b.taskProgress.done / b.taskProgress.total;
-          cmp = pa - pb;
+        case "sync":
+          cmp = syncUrgency(a.syncSummary) - syncUrgency(b.syncSummary);
           break;
-        }
         case "status":
           cmp = Number(a.released) - Number(b.released);
           break;
@@ -340,12 +337,12 @@ export default function ReleasesPage() {
                         className="w-48"
                       />
                       <SortableTh
-                        label="Progress"
-                        sortKey="progress"
+                        label="Sync"
+                        sortKey="sync"
                         activeKey={sortKey}
                         dir={sortDir}
                         onClick={toggleSort}
-                        className="w-48"
+                        className="w-56"
                       />
                       <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         Template
@@ -428,10 +425,6 @@ function ReleaseRow({
 }) {
   const { platform: p, releaseType: rt } = parseReleaseName(release.name);
   const date = relativeDate(release.releaseDate, release.released);
-  const done = release.taskProgress.done;
-  const total = release.taskProgress.total;
-  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
-  const pTone = progressTone(done, total, date.tone, release.released);
 
   return (
     <tr className="border-b last:border-b-0 hover:bg-muted/40 transition-colors group">
@@ -466,27 +459,7 @@ function ReleaseRow({
       </td>
 
       <td className="px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          <div className="h-1.5 w-24 rounded-full bg-muted overflow-hidden shrink-0">
-            <div
-              className={cn(
-                "h-full rounded-full transition-all",
-                pTone === "done" && "bg-green-500",
-                pTone === "warn" && "bg-amber-500",
-                pTone === "danger" && "bg-red-500",
-                pTone === "neutral" && "bg-foreground/60"
-              )}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          {total > 0 ? (
-            <span className="text-xs tabular-nums text-muted-foreground">
-              {done}/{total}
-            </span>
-          ) : (
-            <span className="text-xs text-muted-foreground/50">—</span>
-          )}
-        </div>
+        <SyncCell summary={release.syncSummary} />
       </td>
 
       <td className="px-3 py-2.5">
@@ -558,6 +531,78 @@ function DateCell({
           {date.subLabel}
         </span>
       )}
+    </div>
+  );
+}
+
+function SyncCell({ summary }: { summary: SyncSummary }) {
+  const tracked = summary.total - summary.manual;
+  if (tracked === 0) {
+    return <span className="text-xs text-muted-foreground/50">—</span>;
+  }
+
+  const needsAttention = summary.failed + summary.missing;
+  const hasIssues = needsAttention > 0 || summary.drifted > 0;
+  const allSynced = summary.synced === tracked;
+
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      {/* Stacked status bar: green=synced, amber=drifted, red=failed/missing, muted=pending */}
+      <div className="flex h-1.5 w-20 rounded-full bg-muted overflow-hidden shrink-0">
+        {summary.synced > 0 && (
+          <div
+            className="h-full bg-green-500"
+            style={{ width: `${(summary.synced / tracked) * 100}%` }}
+          />
+        )}
+        {summary.drifted > 0 && (
+          <div
+            className="h-full bg-amber-500"
+            style={{ width: `${(summary.drifted / tracked) * 100}%` }}
+          />
+        )}
+        {needsAttention > 0 && (
+          <div
+            className="h-full bg-red-500"
+            style={{ width: `${(needsAttention / tracked) * 100}%` }}
+          />
+        )}
+      </div>
+      <div className="flex items-center gap-1.5 text-xs tabular-nums min-w-0">
+        {allSynced ? (
+          <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
+            <CheckCircle2 className="h-3 w-3" />
+            {summary.synced}
+          </span>
+        ) : (
+          <>
+            {summary.failed > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-red-600 dark:text-red-400">
+                <XCircle className="h-3 w-3" />
+                {summary.failed}
+              </span>
+            )}
+            {summary.missing > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-red-600 dark:text-red-400">
+                <Ghost className="h-3 w-3" />
+                {summary.missing}
+              </span>
+            )}
+            {summary.drifted > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="h-3 w-3" />
+                {summary.drifted}
+              </span>
+            )}
+            {!hasIssues && summary.pending > 0 && (
+              <span className="text-muted-foreground">{summary.pending} pending</span>
+            )}
+            <span className="text-muted-foreground/70">
+              {summary.synced}/{tracked}
+            </span>
+          </>
+        )}
+      </div>
     </div>
   );
 }

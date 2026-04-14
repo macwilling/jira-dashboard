@@ -10,20 +10,42 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { MERGE_FIELDS, type MergeFieldDef } from "@/lib/releases/merge-fields";
+import {
+  MERGE_FIELDS,
+  EVENT_MERGE_FIELDS,
+  type MergeFieldDef,
+} from "@/lib/releases/merge-fields";
+import type { ReleaseEventType } from "@/lib/releases/types";
 import { cn } from "@/lib/utils";
 
 interface Props {
   onInsert: (token: string) => void;
   className?: string;
+  /**
+   * When set, also show the Event group — filtered to tokens available for
+   * this event type. Omit to show the task-flow picker (Release + Task only).
+   */
+  eventType?: ReleaseEventType;
 }
 
-export function MergeFieldPicker({ onInsert, className }: Props) {
-  const groups = MERGE_FIELDS.reduce<Record<string, MergeFieldDef[]>>((acc, f) => {
+export function MergeFieldPicker({ onInsert, className, eventType }: Props) {
+  const eventFields = eventType
+    ? EVENT_MERGE_FIELDS.filter(
+        (f) => !f.events || f.events.includes(eventType),
+      )
+    : [];
+  const allFields: MergeFieldDef[] = [
+    ...MERGE_FIELDS.filter((f) => f.group !== "Task" || !eventType),
+    ...eventFields,
+  ];
+
+  const groups = allFields.reduce<Record<string, MergeFieldDef[]>>((acc, f) => {
     (acc[f.group] ||= []).push(f);
     return acc;
   }, {});
-  const groupOrder: MergeFieldDef["group"][] = ["Release", "Task"];
+  const groupOrder: MergeFieldDef["group"][] = eventType
+    ? ["Release", "Event"]
+    : ["Release", "Task"];
 
   return (
     <DropdownMenu>

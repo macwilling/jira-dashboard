@@ -261,6 +261,33 @@ export async function getGoogleTaskStatus(
   return data.status === "completed" ? "completed" : "needsAction";
 }
 
+export interface GoogleTaskDetails {
+  status: "needsAction" | "completed";
+  /** YYYY-MM-DD or null. Google stores due as an ISO timestamp; we only use the date portion. */
+  due: string | null;
+}
+
+/**
+ * Fetch full details for drift detection. Returns null if the task was deleted.
+ */
+export async function getGoogleTaskDetails(
+  taskListId: string,
+  taskId: string,
+): Promise<GoogleTaskDetails | null> {
+  const token = await getAccessToken();
+  const res = await fetch(
+    `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Get task failed: ${res.status}`);
+  const data = (await res.json()) as { status?: string; due?: string };
+  return {
+    status: data.status === "completed" ? "completed" : "needsAction",
+    due: data.due ? data.due.slice(0, 10) : null,
+  };
+}
+
 /** Update a Google Task's due date. `dueDate` is YYYY-MM-DD or null to clear. */
 export async function updateGoogleTaskDue(
   taskListId: string,
@@ -411,6 +438,52 @@ export async function getCalendarEventStatus(
   if (!res.ok) throw new Error(`Get event failed: ${res.status}`);
   const data = (await res.json()) as { status?: CalendarEventStatus };
   return data.status ?? "confirmed";
+}
+
+export interface CalendarEventDetails {
+  status: "confirmed" | "tentative" | "cancelled";
+  /** Non-null iff all-day. YYYY-MM-DD. */
+  startDate: string | null;
+  /** Non-null iff timed. YYYY-MM-DD (local to the event's timezone). */
+  startDateTimeDate: string | null;
+  /** Non-null iff timed. "HH:MM" (local to the event's timezone). */
+  startDateTimeTime: string | null;
+  /** Raw ISO dateTime for display; null for all-day. */
+  startDateTimeIso: string | null;
+}
+
+/**
+ * Fetch full calendar event details for drift detection. Returns null if missing.
+ *
+ * The start.dateTime from Google arrives as "YYYY-MM-DDTHH:MM:SS±HH:MM" — already
+ * in the event's timezone — so we slice rather than parsing (which would convert
+ * to the server's local tz and corrupt the comparison).
+ */
+export async function getCalendarEventDetails(
+  calendarId: string,
+  eventId: string,
+): Promise<CalendarEventDetails | null> {
+  const token = await getAccessToken();
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Get event failed: ${res.status}`);
+  const data = (await res.json()) as {
+    status?: "confirmed" | "tentative" | "cancelled";
+    start?: { date?: string; dateTime?: string };
+  };
+  const status = data.status ?? "confirmed";
+  const startDate = data.start?.date ?? null;
+  const startDateTimeIso = data.start?.dateTime ?? null;
+  return {
+    status,
+    startDate,
+    startDateTimeIso,
+    startDateTimeDate: startDateTimeIso ? startDateTimeIso.slice(0, 10) : null,
+    startDateTimeTime: startDateTimeIso ? startDateTimeIso.slice(11, 16) : null,
+  };
 }
 
 /**

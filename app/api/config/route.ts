@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
       ...(body.boardId ? { boardId: body.boardId } : {}),
       ...(body.standupTime ? { standupTime: body.standupTime } : {}),
       ...(body.standupTimezone ? { standupTimezone: body.standupTimezone } : {}),
+      ...(body.slackWebhookUrl ? { slackWebhookUrl: body.slackWebhookUrl } : {}),
     });
 
     return NextResponse.json({ ok: true });
