@@ -71,6 +71,21 @@ function versionFromName(name: string): string {
   return match ? match[0] : "";
 }
 
+/**
+ * Normalize to MM/DD/YYYY for display. Jira sometimes sends full ISO timestamps
+ * (`2026-04-30T00:00:00.0+0000`); the app stores dates as YYYY-MM-DD internally.
+ * Merge output targets Slack messages / Google tasks, where MM/DD/YYYY reads
+ * more naturally for US-based users. Done as string slicing so we don't shift
+ * the date across timezones.
+ */
+function toDateOnly(value: string | null | undefined): string {
+  if (!value) return "";
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return value;
+  const [, y, m, d] = match;
+  return `${m}/${d}/${y}`;
+}
+
 export interface EventContextOverride {
   oldDate?: string | null;
   newDate?: string | null;
@@ -92,16 +107,16 @@ export function buildMergeContext(
       platform: parsed.platform ?? "",
       version: versionFromName(release.name),
       releaseType: parsed.releaseType ?? "",
-      date: release.releaseDate ?? "",
+      date: toDateOnly(release.releaseDate),
       description: release.description ?? "",
     },
     task: {
-      dueDate: dueDate ?? "",
+      dueDate: toDateOnly(dueDate),
       dayOffset: dayOffset === 0 ? "0" : dayOffset > 0 ? `+${dayOffset}` : String(dayOffset),
     },
     event: {
-      oldDate: event?.oldDate ?? "",
-      newDate: event?.newDate ?? "",
+      oldDate: toDateOnly(event?.oldDate),
+      newDate: toDateOnly(event?.newDate),
       taskLabel: event?.taskLabel ?? "",
       error: event?.error ?? "",
     },
