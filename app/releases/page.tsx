@@ -15,6 +15,7 @@ import {
   Trash2,
   XCircle,
   Ghost,
+  Clock,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { cn } from "@/lib/utils";
@@ -23,7 +24,7 @@ import type { SyncSummary } from "@/lib/releases/sync-state";
 import { parseReleaseName } from "@/lib/releases/matcher";
 
 interface ReleaseWithMeta extends Release {
-  matchedTemplate: { id: string; name: string } | null;
+  matchedTemplates: { id: string; name: string }[];
   syncSummary: SyncSummary;
 }
 
@@ -128,8 +129,8 @@ export default function ReleasesPage() {
       if (scope === "released" && !r.released) return false;
       if (scope === "released" && r.archived) return false;
       if (scope === "archived" && !r.archived) return false;
-      if (templateFilter === "has" && !r.matchedTemplate) return false;
-      if (templateFilter === "none" && r.matchedTemplate) return false;
+      if (templateFilter === "has" && r.matchedTemplates.length === 0) return false;
+      if (templateFilter === "none" && r.matchedTemplates.length > 0) return false;
       if (platform) {
         const { platform: p } = parseReleaseName(r.name);
         if (p !== platform) return false;
@@ -178,6 +179,26 @@ export default function ReleasesPage() {
       else c.upcoming++;
     }
     return c;
+  }, [releases]);
+
+  // Count unmatched actionable releases (upcoming, not released/archived/deleted).
+  // These are ones where a Jira version name likely has a typo — no template
+  // matched, so no tasks were generated.
+  const unmatchedCount = useMemo(() => {
+    return releases.filter(
+      (r) =>
+        !r.deletedAt &&
+        !r.released &&
+        !r.archived &&
+        r.matchedTemplates.length === 0,
+    ).length;
+  }, [releases]);
+
+  // Releases sitting in "pending approval" — actionable, waiting on a human click.
+  const pendingApprovalCount = useMemo(() => {
+    return releases.filter(
+      (r) => !r.deletedAt && r.approvalStatus === "pending",
+    ).length;
   }, [releases]);
 
   const handlePurge = async (release: ReleaseWithMeta) => {
@@ -289,7 +310,49 @@ export default function ReleasesPage() {
         </div>
 
         <main className="px-4 py-4">
-          <div className="max-w-7xl mx-auto">
+          <div className="max-w-7xl mx-auto space-y-3">
+            {/* Pending approval banner — releases that need a human click before
+                any Google resources are created. Distinct from unmatched (which
+                is a typo/miss) — pending approval is the expected happy path
+                for each release when the gate is configured. */}
+            {pendingApprovalCount > 0 && (
+              <div className="w-full rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 flex items-center gap-2">
+                <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                <p className="text-sm text-amber-800 dark:text-amber-300 flex-1">
+                  <span className="font-medium tabular-nums">{pendingApprovalCount}</span>{" "}
+                  release{pendingApprovalCount === 1 ? "" : "s"} awaiting approval.
+                </p>
+                <span className="text-xxs text-muted-foreground">
+                  Check Slack or click a row to approve.
+                </span>
+              </div>
+            )}
+
+            {/* Unmatched badge — surfaces releases whose Jira names probably have typos.
+                No template matched = no tasks fired, so the release manager needs to know. */}
+            {unmatchedCount > 0 && templateFilter !== "none" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setTemplateFilter("none");
+                  setScope("upcoming");
+                }}
+                className="w-full rounded-md border border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10 transition-colors px-3 py-2 flex items-center gap-2 text-left"
+              >
+                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-amber-800 dark:text-amber-300">
+                    <span className="font-medium tabular-nums">{unmatchedCount}</span>{" "}
+                    upcoming release{unmatchedCount === 1 ? "" : "s"} with no matching template
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Likely a typo in the Jira version name (expected{" "}
+                    <code className="bg-muted px-1 rounded">platform@x.y.z</code>). Click to filter.
+                  </p>
+                </div>
+              </button>
+            )}
+
             {loading && (
               <div className="flex items-center justify-center py-16">
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -463,18 +526,25 @@ function ReleaseRow({
       </td>
 
       <td className="px-3 py-2.5">
-        {release.matchedTemplate ? (
-          <Link
-            href={`/releases/templates/${release.matchedTemplate.id}`}
-            className="text-xs text-muted-foreground hover:text-foreground hover:underline"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {release.matchedTemplate.name}
-          </Link>
-        ) : (
+        {release.matchedTemplates.length === 0 ? (
           <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
             <AlertCircle className="h-3 w-3" />
             No template
+          </span>
+        ) : release.matchedTemplates.length === 1 ? (
+          <Link
+            href={`/releases/templates/${release.matchedTemplates[0].id}`}
+            className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {release.matchedTemplates[0].name}
+          </Link>
+        ) : (
+          <span
+            className="text-xs text-muted-foreground"
+            title={release.matchedTemplates.map((t) => t.name).join(" + ")}
+          >
+            {release.matchedTemplates.map((t) => t.name).join(" + ")}
           </span>
         )}
       </td>
@@ -629,6 +699,24 @@ function StatusBadge({ release }: { release: ReleaseWithMeta }) {
       <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-green-500/10 text-green-700 dark:text-green-400">
         <CheckCircle2 className="h-3 w-3" />
         Released
+      </span>
+    );
+  }
+  // Pending approval takes precedence over the default "Active" because it's
+  // actionable — you need to click something before tasks will fire.
+  if (release.approvalStatus === "pending") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-400">
+        <Clock className="h-3 w-3" />
+        Awaiting approval
+      </span>
+    );
+  }
+  if (release.approvalStatus === "cancelled") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-red-500/10 text-red-700 dark:text-red-400">
+        <XCircle className="h-3 w-3" />
+        Cancelled
       </span>
     );
   }

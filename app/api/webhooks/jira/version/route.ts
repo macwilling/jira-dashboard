@@ -10,6 +10,11 @@ import {
   cascadeReleaseDateChange,
 } from "@/lib/releases/dispatcher";
 import { fireReleaseEvent } from "@/lib/releases/notifications";
+import {
+  isApprovalGateEnabled,
+  postApprovalRequest,
+  supersedeAndRepost,
+} from "@/lib/releases/approval";
 import type {
   JiraVersionPayload,
   JiraVersionWebhookEvent,
@@ -114,6 +119,14 @@ export async function POST(req: NextRequest) {
 
     // Don't regenerate Google side-effects for a release the user has soft-deleted.
     // They'll purge via the Releases UI when ready.
+    //
+    // Note on name-change re-matching: maybeGenerateInstances runs on every
+    // update with a date, and is idempotent (skips if any instances exist).
+    // That means a release that initially had a typo in its name (no match →
+    // no instances) automatically picks up matching templates the moment the
+    // name is corrected in Jira. Conversely, renaming a release after it's
+    // generated won't clobber existing tasks — the user can click "Rebuild"
+    // on the release detail page if they want to reset.
     if (newDate && !release.deletedAt) {
       await maybeGenerateInstances(release).catch(
         (err) => console.warn("[webhook] maybeGenerateInstances failed", err)
@@ -125,9 +138,36 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      await autoDispatchPendingInstances(String(version.id)).catch(
-        (err) => console.warn("[webhook] autoDispatchPendingInstances failed", err)
-      );
+      // Approval gate: when configured, dispatch is held until the user
+      // clicks Approve on an interactive Slack message.
+      //
+      //   none      → first time seeing this, post approval, skip auto-dispatch
+      //   pending   → supersede old message + re-post (Jira updated mid-wait)
+      //   approved  → already ok'd, let auto-dispatch run as usual
+      //   cancelled → user explicitly said no, stay silent; they can re-trigger
+      //               from the app if they change their mind
+      const refreshed = await getRelease(String(version.id));
+      const approvalTarget = await isApprovalGateEnabled();
+
+      if (approvalTarget && refreshed && refreshed.approvalStatus !== "approved") {
+        if (refreshed.approvalStatus === "none") {
+          // Only post if there are actual instances to approve — unmatched
+          // releases generated nothing and there's nothing to gate.
+          await postApprovalRequest({ release: refreshed, target: approvalTarget })
+            .catch((err) =>
+              console.warn("[webhook] postApprovalRequest failed", err),
+            );
+        } else if (refreshed.approvalStatus === "pending") {
+          await supersedeAndRepost(refreshed, approvalTarget).catch((err) =>
+            console.warn("[webhook] supersedeAndRepost failed", err),
+          );
+        }
+        // cancelled: intentionally no-op.
+      } else {
+        await autoDispatchPendingInstances(String(version.id)).catch(
+          (err) => console.warn("[webhook] autoDispatchPendingInstances failed", err)
+        );
+      }
     }
 
     // Notification events. fireReleaseEvent swallows its own errors, so these

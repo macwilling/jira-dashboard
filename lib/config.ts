@@ -5,6 +5,13 @@ export interface DashboardConfig {
   boardId?: string; // Jira Agile board ID — used as fallback to fetch active sprint
   standupTime?: string; // HH:MM in 24h format, e.g. "09:45". Defaults to "09:00"
   standupTimezone?: string; // IANA timezone, e.g. "America/New_York". Defaults to browser local
+  /**
+   * Slack target (channel C…/G… or user U…) for release-approval requests.
+   * When set, the webhook materializes task instances but posts an interactive
+   * approval message here instead of auto-dispatching. Empty / unset = no gate.
+   * Requires SLACK_SIGNING_SECRET env var and a Slack app with Interactivity enabled.
+   */
+  releaseApprovalSlackTarget?: string;
 }
 
 const CONFIG_KEY = "dashboard-config";

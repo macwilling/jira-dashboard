@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { CheckCircle2, XCircle, Loader2, Save, LogOut, Send } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, Save, LogOut, Send, TestTube } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { SlackTargetPicker } from "@/components/releases/SlackTargetPicker";
 
 interface ConfigStatus {
   jiraConnected: boolean;
@@ -19,6 +20,7 @@ interface ConfigStatus {
     boardId?: string;
     standupTime?: string;
     standupTimezone?: string;
+    releaseApprovalSlackTarget?: string;
   } | null;
 }
 
@@ -55,6 +57,13 @@ export default function SettingsPage() {
   const [boardId, setBoardId] = useState("");
   const [standupTime, setStandupTime] = useState("09:00");
   const [standupTimezone, setStandupTimezone] = useState("");
+  const [releaseApprovalTarget, setReleaseApprovalTarget] = useState("");
+  const [approvalTestSending, setApprovalTestSending] = useState(false);
+  const [approvalTestResult, setApprovalTestResult] = useState<
+    | { kind: "sent"; warnings: string[] }
+    | { kind: "error"; error: string }
+    | null
+  >(null);
 
   const [slackAuth, setSlackAuth] = useState<SlackAuthStatus | null>(null);
   const [slackTesting, setSlackTesting] = useState(false);
@@ -92,6 +101,7 @@ export default function SettingsPage() {
           setBoardId(data.config.boardId || "");
           setStandupTime(data.config.standupTime || "09:00");
           setStandupTimezone(data.config.standupTimezone || "");
+          setReleaseApprovalTarget(data.config.releaseApprovalSlackTarget || "");
         }
       })
       .catch(() => {})
@@ -117,6 +127,9 @@ export default function SettingsPage() {
           ...(boardId.trim() ? { boardId: boardId.trim() } : {}),
           ...(standupTime ? { standupTime } : {}),
           ...(standupTimezone.trim() ? { standupTimezone: standupTimezone.trim() } : {}),
+          ...(releaseApprovalTarget.trim()
+            ? { releaseApprovalSlackTarget: releaseApprovalTarget.trim() }
+            : { releaseApprovalSlackTarget: "" }),
         }),
       });
       if (res.ok) setSaved(true);
@@ -124,6 +137,36 @@ export default function SettingsPage() {
       // ignore
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleApprovalTest = async () => {
+    const target = releaseApprovalTarget.trim();
+    if (!target) return;
+    setApprovalTestSending(true);
+    setApprovalTestResult(null);
+    try {
+      const res = await fetch("/api/releases/approval-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setApprovalTestResult({
+          kind: "sent",
+          warnings: Array.isArray(data.warnings) ? data.warnings : [],
+        });
+      } else {
+        setApprovalTestResult({
+          kind: "error",
+          error: data.error || `HTTP ${res.status}`,
+        });
+      }
+    } catch (e) {
+      setApprovalTestResult({ kind: "error", error: (e as Error).message });
+    } finally {
+      setApprovalTestSending(false);
     }
   };
 
@@ -462,6 +505,109 @@ export default function SettingsPage() {
               <code className="bg-muted px-1 rounded">users:read</code>.
               Rotate by regenerating in the Slack app&apos;s OAuth &amp; Permissions page and updating the env var.
             </p>
+          </div>
+        </section>
+
+        {/* Release approval gate */}
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Release Approval Gate
+          </h2>
+          <div className="rounded-lg border p-4 space-y-3">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              When set, the Jira version webhook materializes task instances but
+              holds Google dispatch until you click <span className="font-medium">Approve</span>{" "}
+              on an interactive Slack message. Leave empty to auto-dispatch (current behavior).
+            </p>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Approval channel or DM</Label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <SlackTargetPicker
+                  value={releaseApprovalTarget}
+                  onChange={setReleaseApprovalTarget}
+                />
+                {releaseApprovalTarget && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xxs text-muted-foreground"
+                    onClick={() => setReleaseApprovalTarget("")}
+                  >
+                    Clear
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs gap-1.5 ml-auto"
+                  onClick={handleApprovalTest}
+                  disabled={!releaseApprovalTarget.trim() || approvalTestSending}
+                  title="Post a throwaway approval message; clicking Approve in Slack confirms the round-trip works"
+                >
+                  {approvalTestSending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <TestTube className="h-3 w-3" />
+                  )}
+                  Send test message
+                </Button>
+              </div>
+              <p className="text-xxs text-muted-foreground">
+                Pick a channel (#releases) or DM yourself. The bot must be a
+                member of the channel to post.
+              </p>
+
+              {approvalTestResult?.kind === "sent" && (
+                <div className="rounded-md border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-xs space-y-1.5">
+                  <p className="text-foreground">
+                    <CheckCircle2 className="inline h-3 w-3 text-blue-600 dark:text-blue-400 mr-1 align-text-bottom" />
+                    Test message sent. Open Slack — clicking{" "}
+                    <span className="font-medium">Approve (test)</span> should
+                    edit the message to{" "}
+                    <span className="font-medium">&quot;Test successful&quot;</span>.
+                  </p>
+                  <p className="text-xxs text-muted-foreground">
+                    If the buttons do nothing, the app&apos;s interactive
+                    endpoint isn&apos;t reachable from Slack — check{" "}
+                    <code className="bg-muted px-1 rounded">SLACK_SIGNING_SECRET</code>
+                    , the Slack app&apos;s Request URL, and the bot&apos;s
+                    membership in the channel.
+                  </p>
+                  {approvalTestResult.warnings.length > 0 && (
+                    <ul className="text-xxs text-amber-700 dark:text-amber-400 list-disc list-inside space-y-0.5">
+                      {approvalTestResult.warnings.map((w, i) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              {approvalTestResult?.kind === "error" && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                  <XCircle className="inline h-3 w-3 mr-1 align-text-bottom" />
+                  {approvalTestResult.error}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md border-dashed border bg-muted/30 p-3 space-y-1">
+              <p className="text-xxs font-medium text-foreground">
+                Required server setup
+              </p>
+              <p className="text-xxs text-muted-foreground leading-relaxed">
+                Set <code className="bg-muted px-1 rounded">SLACK_SIGNING_SECRET</code>{" "}
+                (Slack app → Basic Information → App Credentials) and{" "}
+                <code className="bg-muted px-1 rounded">NEXT_PUBLIC_APP_URL</code>{" "}
+                (your production URL, e.g. <code className="bg-muted px-1 rounded">https://app.example.com</code>),
+                then in your Slack app enable <span className="font-medium">Interactivity</span>{" "}
+                with Request URL{" "}
+                <code className="bg-muted px-1 rounded">
+                  {"{NEXT_PUBLIC_APP_URL}"}/api/webhooks/slack/interactive
+                </code>
+                .
+              </p>
+            </div>
           </div>
         </section>
 

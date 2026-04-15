@@ -14,6 +14,7 @@ import type {
   ActionType,
   ReleaseEventType,
   ReleaseType,
+  TemplateTaskOverrides,
 } from "@/lib/releases/types";
 
 export async function GET(
@@ -55,6 +56,8 @@ export async function PUT(
         startTime?: string | null;
         durationMinutes?: number;
         actionConfig?: Record<string, unknown> | null;
+        definitionId?: string | null;
+        overrides?: TemplateTaskOverrides | null;
       }>;
       notifications?: Array<{
         eventType: ReleaseEventType;

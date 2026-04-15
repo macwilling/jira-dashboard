@@ -108,6 +108,29 @@ export async function postSlackMessage(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// chat.update — edit an existing message. Used to finalize approval requests
+// ("✅ Approved by …") and mark superseded ones stale.
+
+export interface UpdateMessageArgs {
+  channel: string;
+  ts: string;
+  text: string;
+  blocks?: unknown[];
+}
+
+export async function updateSlackMessage(args: UpdateMessageArgs): Promise<void> {
+  const body: Record<string, unknown> = {
+    channel: args.channel,
+    ts: args.ts,
+    text: args.text,
+  };
+  // Slack requires blocks to be explicit on update — if omitted, the old blocks
+  // remain. We always pass (possibly empty) so the UI reflects the new state.
+  body.blocks = args.blocks ?? [];
+  await slackFetch<SlackApiResponse>("chat.update", { body });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // auth.test
 
 export interface AuthTestResult {

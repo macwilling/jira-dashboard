@@ -18,6 +18,9 @@ import {
   RotateCcw,
   Minus,
   ArrowUpToLine,
+  Clock,
+  Check,
+  X as XIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
@@ -185,8 +188,8 @@ export default function ReleasePage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [release, setRelease] = useState<Release | null>(null);
-  const [matchedTemplate, setMatchedTemplate] = useState<ReleaseTemplate | null>(null);
-  const [templateTaskCount, setTemplateTaskCount] = useState(0);
+  const [matchedTemplates, setMatchedTemplates] = useState<ReleaseTemplate[]>([]);
+  const [expectedTaskCount, setExpectedTaskCount] = useState(0);
   const [instances, setInstances] = useState<InstanceWithState[]>([]);
   const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -198,6 +201,8 @@ export default function ReleasePage() {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [purging, setPurging] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [cancellingApproval, setCancellingApproval] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -205,8 +210,8 @@ export default function ReleasePage() {
       .then((r) => r.json())
       .then((data) => {
         setRelease(data.release);
-        setMatchedTemplate(data.matchedTemplate);
-        setTemplateTaskCount(data.matchedTemplateTaskCount ?? 0);
+        setMatchedTemplates(data.matchedTemplates ?? []);
+        setExpectedTaskCount(data.expectedTaskCount ?? 0);
         setInstances(data.taskInstances ?? []);
         setSyncSummary(data.syncSummary ?? null);
       })
@@ -336,6 +341,36 @@ export default function ReleasePage() {
     }
   };
 
+  const handleManualApprove = async () => {
+    setApproving(true);
+    try {
+      const res = await fetch(`/api/releases/${id}/approve`, { method: "POST" });
+      if (res.ok) load();
+      else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || "Approve failed");
+      }
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  const handleManualCancel = async () => {
+    setCancellingApproval(true);
+    try {
+      const res = await fetch(`/api/releases/${id}/cancel-approval`, {
+        method: "POST",
+      });
+      if (res.ok) load();
+      else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || "Cancel failed");
+      }
+    } finally {
+      setCancellingApproval(false);
+    }
+  };
+
   const parsed = release ? parseReleaseName(release.name) : null;
   const groups = useMemo(() => groupByPhase(instances), [instances]);
 
@@ -419,7 +454,7 @@ export default function ReleasePage() {
           </TooltipContent>
         </Tooltip>
       )}
-      {matchedTemplate && !release.deletedAt && (
+      {matchedTemplates.length > 0 && !release.deletedAt && (
         <Tooltip>
           <TooltipTrigger
             render={
@@ -481,6 +516,81 @@ export default function ReleasePage() {
           </div>
         )}
 
+        {/* Approval banner — pending, approved (recently), or cancelled.
+            Pending is actionable and shows Approve/Cancel buttons as a
+            fallback for when the Slack interactive path fails. Approved and
+            cancelled are passive state reminders. */}
+        {release.approvalStatus === "pending" && !release.deletedAt && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 flex items-start gap-3 text-sm">
+            <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1 space-y-0.5">
+              <p className="font-medium text-amber-700 dark:text-amber-400">
+                Awaiting approval
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Tasks are materialized but won&apos;t dispatch to Google until
+                someone approves. Check Slack for the interactive message — or
+                approve directly from here if Slack isn&apos;t available.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Button
+                size="sm"
+                className="h-7 text-xs gap-1"
+                onClick={handleManualApprove}
+                disabled={approving || cancellingApproval}
+              >
+                {approving ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Check className="h-3 w-3" />
+                )}
+                Approve
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs gap-1 text-muted-foreground"
+                onClick={handleManualCancel}
+                disabled={approving || cancellingApproval}
+              >
+                {cancellingApproval ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <XIcon className="h-3 w-3" />
+                )}
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {release.approvalStatus === "cancelled" && !release.deletedAt && (
+          <div className="rounded-md border border-muted bg-muted/30 px-3 py-2 flex items-start gap-3 text-sm">
+            <XCircle className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+            <div className="flex-1 space-y-0.5">
+              <p className="font-medium text-foreground">Approval cancelled</p>
+              <p className="text-xs text-muted-foreground">
+                Tasks were not dispatched. To run them, click{" "}
+                <span className="font-medium">Approve</span>.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              className="h-7 text-xs gap-1"
+              onClick={handleManualApprove}
+              disabled={approving}
+            >
+              {approving ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Check className="h-3 w-3" />
+              )}
+              Approve anyway
+            </Button>
+          </div>
+        )}
+
         {/* Header: meta + sync summary */}
         <section className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-start">
           <div className="space-y-2 min-w-0">
@@ -509,22 +619,27 @@ export default function ReleasePage() {
             )}
             <div className="flex items-center gap-2 text-sm">
               <Package className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              {matchedTemplate ? (
-                <span className="text-muted-foreground">
-                  Template:{" "}
-                  <Link
-                    href={`/releases/templates/${matchedTemplate.id}`}
-                    className="text-foreground font-medium hover:underline"
-                  >
-                    {matchedTemplate.name}
-                  </Link>
-                </span>
-              ) : (
+              {matchedTemplates.length === 0 ? (
                 <span className="text-muted-foreground">
                   No template matched —{" "}
                   <Link href="/releases/templates" className="hover:underline text-foreground">
                     manage templates
                   </Link>
+                </span>
+              ) : (
+                <span className="text-muted-foreground">
+                  Template{matchedTemplates.length > 1 ? "s" : ""}:{" "}
+                  {matchedTemplates.map((t, i) => (
+                    <span key={t.id}>
+                      {i > 0 && <span className="mx-1">+</span>}
+                      <Link
+                        href={`/releases/templates/${t.id}`}
+                        className="text-foreground font-medium hover:underline"
+                      >
+                        {t.name}
+                      </Link>
+                    </span>
+                  ))}
                 </span>
               )}
             </div>
@@ -565,7 +680,7 @@ export default function ReleasePage() {
               </section>
             ))}
           </div>
-        ) : matchedTemplate ? (
+        ) : matchedTemplates.length > 0 ? (
           <div className="rounded-lg border border-dashed p-8 text-center space-y-3">
             <p className="text-sm text-muted-foreground">No tasks generated yet.</p>
             <Button
@@ -598,12 +713,25 @@ export default function ReleasePage() {
           <DialogHeader>
             <DialogTitle>Rebuild checklist?</DialogTitle>
             <DialogDescription>
-              Rebuilds this release&apos;s checklist from the{" "}
-              <span className="font-medium text-foreground">
-                {matchedTemplate?.name}
-              </span>{" "}
-              template. Useful after the template changes, or to reset rows
-              that got into a bad state.
+              Rebuilds this release&apos;s checklist from{" "}
+              {matchedTemplates.length === 1 ? (
+                <>
+                  the{" "}
+                  <span className="font-medium text-foreground">
+                    {matchedTemplates[0].name}
+                  </span>{" "}
+                  template
+                </>
+              ) : (
+                <>
+                  <span className="font-medium text-foreground">
+                    {matchedTemplates.length} matching templates
+                  </span>{" "}
+                  ({matchedTemplates.map((t) => t.name).join(" + ")})
+                </>
+              )}
+              . Useful after a template changes, or to reset rows that got into
+              a bad state.
             </DialogDescription>
           </DialogHeader>
 
@@ -628,8 +756,8 @@ export default function ReleasePage() {
               <div className="flex items-start gap-2">
                 <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-600 shrink-0" />
                 <div>
-                  <span className="font-medium tabular-nums">{templateTaskCount}</span>{" "}
-                  fresh row{templateTaskCount === 1 ? "" : "s"} from template{" "}
+                  <span className="font-medium tabular-nums">{expectedTaskCount}</span>{" "}
+                  fresh row{expectedTaskCount === 1 ? "" : "s"} from template{" "}
                   <span className="text-muted-foreground">
                     — created and dispatched to Google automatically
                   </span>

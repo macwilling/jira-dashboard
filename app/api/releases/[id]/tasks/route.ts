@@ -5,7 +5,7 @@ import {
   regenerateTaskInstances,
   listTemplates,
 } from "@/lib/releases/templates-store";
-import { matchTemplate } from "@/lib/releases/matcher";
+import { matchTemplates } from "@/lib/releases/matcher";
 import { autoDispatchPendingInstances } from "@/lib/releases/dispatcher";
 
 export async function GET(
@@ -21,34 +21,28 @@ export async function GET(
   }
 }
 
-/** POST — regenerate task instances for this release from the matched template. */
+/** POST — regenerate task instances for this release from every matching template. */
 export async function POST(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   try {
-    const body = await req.json().catch(() => ({})) as { templateId?: string };
-
     const release = await getRelease(id);
     if (!release) {
       return NextResponse.json({ error: "release not found" }, { status: 404 });
     }
 
-    let templateId = body.templateId;
-    if (!templateId) {
-      const templates = await listTemplates();
-      const matched = matchTemplate(release.name, templates);
-      if (!matched) {
-        return NextResponse.json(
-          { error: "no matching template found" },
-          { status: 422 }
-        );
-      }
-      templateId = matched.id;
+    const templates = await listTemplates();
+    const matched = matchTemplates(release.name, templates);
+    if (matched.length === 0) {
+      return NextResponse.json(
+        { error: "no matching template found" },
+        { status: 422 }
+      );
     }
 
-    await regenerateTaskInstances(release, templateId);
+    await regenerateTaskInstances(release);
 
     // Auto-dispatch any newly-created Google Task / Calendar rows so the user
     // doesn't have to click "Create" per row after regenerating.

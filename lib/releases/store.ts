@@ -1,5 +1,5 @@
 import { d1Query } from "@/lib/d1/client";
-import type { JiraVersionPayload, Release } from "./types";
+import type { ApprovalStatus, JiraVersionPayload, Release } from "./types";
 
 interface ReleaseRow {
   id: string;
@@ -14,6 +14,12 @@ interface ReleaseRow {
   jira_raw: string;
   received_at: string;
   updated_at: string;
+  approval_status: string | null;
+  approval_version: number | null;
+  approval_message_ts: string | null;
+  approval_message_channel: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
 }
 
 function rowToRelease(row: ReleaseRow): Release {
@@ -23,6 +29,7 @@ function rowToRelease(row: ReleaseRow): Release {
   } catch {
     jiraRaw = row.jira_raw;
   }
+  const status = (row.approval_status ?? "none") as ApprovalStatus;
   return {
     id: row.id,
     projectId: row.project_id,
@@ -36,7 +43,90 @@ function rowToRelease(row: ReleaseRow): Release {
     jiraRaw,
     receivedAt: row.received_at,
     updatedAt: row.updated_at,
+    approvalStatus: status,
+    approvalVersion: row.approval_version ?? 0,
+    approvalMessageTs: row.approval_message_ts,
+    approvalMessageChannel: row.approval_message_channel,
+    approvedAt: row.approved_at,
+    approvedBy: row.approved_by,
   };
+}
+
+/**
+ * Record that an approval request was posted to Slack. Called after the
+ * webhook successfully posts the message — ties this release to that message
+ * so later clicks can be routed back here.
+ */
+export async function setApprovalPending(
+  id: string,
+  params: { version: number; messageTs: string; channel: string },
+): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases
+       SET approval_status = 'pending',
+           approval_version = ?,
+           approval_message_ts = ?,
+           approval_message_channel = ?,
+           updated_at = ?
+     WHERE id = ?`,
+    [params.version, params.messageTs, params.channel, now, id],
+  );
+}
+
+/** Increments the approval_version counter. Use when superseding a stale
+ *  pending message (release updated in Jira while waiting for approval). */
+export async function bumpApprovalVersion(id: string): Promise<number> {
+  const now = new Date().toISOString();
+  const { results } = await d1Query<{ approval_version: number | null }>(
+    `UPDATE releases
+       SET approval_version = COALESCE(approval_version, 0) + 1,
+           updated_at = ?
+     WHERE id = ?
+     RETURNING approval_version`,
+    [now, id],
+  );
+  return results[0]?.approval_version ?? 1;
+}
+
+export async function setApprovalApproved(
+  id: string,
+  approvedBy: string | null,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases
+       SET approval_status = 'approved',
+           approved_at = ?,
+           approved_by = ?,
+           updated_at = ?
+     WHERE id = ?`,
+    [now, approvedBy, now, id],
+  );
+}
+
+export async function setApprovalCancelled(id: string): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases
+       SET approval_status = 'cancelled',
+           updated_at = ?
+     WHERE id = ?`,
+    [now, id],
+  );
+}
+
+export async function clearApproval(id: string): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases
+       SET approval_status = 'none',
+           approval_message_ts = NULL,
+           approval_message_channel = NULL,
+           updated_at = ?
+     WHERE id = ?`,
+    [now, id],
+  );
 }
 
 /**

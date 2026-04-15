@@ -42,21 +42,25 @@ export function parseReleaseName(name: string): ParsedReleaseName {
 }
 
 /**
- * Finds the highest-priority matching template for a release name.
- * Templates must be sorted by priority ASC before calling.
+ * Returns ALL templates that match a release name, ordered by `priority` ASC
+ * (same ordering as the input). Templates layer: every matching template
+ * contributes its tasks to the release.
  *
- * Match rule: OR within each list, AND across the two.
+ * Match rule per template: OR within each list, AND across the two.
  * `null` or empty list = wildcard. So a template with
  *   platformPrefixes: ["web", "android"], releaseTypes: ["minor"]
  * matches web or android minor releases only.
+ *
+ * A release with no matches produces no tasks — that's intentional. The release
+ * manager should see "unmatched" as a signal the version name is wrong in Jira.
  */
-export function matchTemplate(
+export function matchTemplates(
   releaseName: string,
-  templates: ReleaseTemplate[]
-): ReleaseTemplate | null {
+  templates: ReleaseTemplate[],
+): ReleaseTemplate[] {
   const { platform, releaseType } = parseReleaseName(releaseName);
 
-  for (const tmpl of templates) {
+  return templates.filter((tmpl) => {
     const platformMatch =
       !tmpl.platformPrefixes ||
       tmpl.platformPrefixes.length === 0 ||
@@ -67,12 +71,8 @@ export function matchTemplate(
       tmpl.releaseTypes.length === 0 ||
       (releaseType !== null && tmpl.releaseTypes.includes(releaseType));
 
-    if (platformMatch && typeMatch) {
-      return tmpl;
-    }
-  }
-
-  return null;
+    return platformMatch && typeMatch;
+  });
 }
 
 /**

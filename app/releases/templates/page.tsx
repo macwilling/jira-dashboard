@@ -8,6 +8,7 @@ import {
   Plus,
   GripVertical,
   ListChecks,
+  Library,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import {
@@ -156,6 +157,12 @@ export default function TemplatesPage() {
       {saving && (
         <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
       )}
+      <Link href="/releases/task-library">
+        <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5">
+          <Library className="h-3.5 w-3.5" />
+          Task Library
+        </Button>
+      </Link>
       <Button
         size="sm"
         className="h-7 text-xs gap-1.5"
@@ -176,9 +183,10 @@ export default function TemplatesPage() {
     <AppShell title="Release Templates" actions={actions}>
       <main className="max-w-3xl mx-auto px-6 py-8 space-y-4">
         <p className="text-xs text-muted-foreground">
-          Templates are matched in priority order (top = highest). The first
+          Templates <span className="font-medium text-foreground">layer</span> — every
           template whose platform and release type filters match the release name
-          wins. A template with no filters is a catch-all fallback.
+          contributes its tasks. Order (top = first) controls task ordering across layers.
+          A release with no matching template generates no tasks.
         </p>
 
         {loading && (

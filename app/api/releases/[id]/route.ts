@@ -5,7 +5,7 @@ import {
   listTaskInstances,
   listTemplateTasks,
 } from "@/lib/releases/templates-store";
-import { matchTemplate } from "@/lib/releases/matcher";
+import { matchTemplates } from "@/lib/releases/matcher";
 import { computeSyncState, summarizeSyncStates } from "@/lib/releases/sync-state";
 
 export async function GET(
@@ -23,18 +23,19 @@ export async function GET(
       return NextResponse.json({ error: "not found" }, { status: 404 });
     }
 
-    const matched = matchTemplate(release.name, templates);
-    const [instances, templateTaskCount] = await Promise.all([
+    const matched = matchTemplates(release.name, templates);
+    const [instances, taskCounts] = await Promise.all([
       listTaskInstances(id),
-      matched ? listTemplateTasks(matched.id).then((t) => t.length) : Promise.resolve(0),
+      Promise.all(matched.map((t) => listTemplateTasks(t.id).then((r) => r.length))),
     ]);
+    const expectedTaskCount = taskCounts.reduce((s, n) => s + n, 0);
 
     const withState = instances.map((i) => ({ ...i, syncState: computeSyncState(i) }));
 
     return NextResponse.json({
       release,
-      matchedTemplate: matched ?? null,
-      matchedTemplateTaskCount: templateTaskCount,
+      matchedTemplates: matched,
+      expectedTaskCount,
       taskInstances: withState,
       syncSummary: summarizeSyncStates(instances),
     });

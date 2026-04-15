@@ -1,5 +1,5 @@
 import { d1Query } from "@/lib/d1/client";
-import { addDays, matchTemplate } from "./matcher";
+import { addDays, matchTemplates } from "./matcher";
 import { buildMergeContext, renderMergeFields } from "./merge-fields";
 import type {
   Release,
@@ -9,7 +9,34 @@ import type {
   ActionType,
   ReleaseType,
   TaskInstanceStatus,
+  TaskDefinition,
+  ConfigurableField,
+  TemplateTaskOverrides,
 } from "./types";
+
+const ALL_CONFIGURABLE_FIELDS: ConfigurableField[] = [
+  "label",
+  "description",
+  "dayOffset",
+  "allDay",
+  "startTime",
+  "durationMinutes",
+  "actionConfig",
+];
+
+function parseConfigurableFields(raw: string | null): ConfigurableField[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is ConfigurableField =>
+      typeof v === "string" &&
+      (ALL_CONFIGURABLE_FIELDS as string[]).includes(v),
+    );
+  } catch {
+    return [];
+  }
+}
 
 // ─── Row shapes ────────────────────────────────────────────────────────────────
 
@@ -37,6 +64,24 @@ interface TemplateTaskRow {
   duration_minutes: number;
   position: number;
   action_config: string | null;
+  definition_id: string | null;
+  overrides: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface TaskDefinitionRow {
+  id: string;
+  name: string;
+  label: string;
+  description: string | null;
+  action_type: string;
+  day_offset: number;
+  all_day: number;
+  start_time: string | null;
+  duration_minutes: number;
+  action_config: string | null;
+  configurable_fields: string;
   created_at: string;
   updated_at: string;
 }
@@ -99,15 +144,19 @@ function rowToTemplate(row: TemplateRow): ReleaseTemplate {
   };
 }
 
-function rowToTemplateTask(row: TemplateTaskRow): ReleaseTemplateTask {
-  let actionConfig: Record<string, unknown> | null = null;
-  if (row.action_config) {
-    try {
-      actionConfig = JSON.parse(row.action_config);
-    } catch {
-      actionConfig = null;
-    }
+function parseJsonObject(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
   }
+}
+
+function rowToTemplateTask(row: TemplateTaskRow): ReleaseTemplateTask {
   return {
     id: row.id,
     templateId: row.template_id,
@@ -119,7 +168,27 @@ function rowToTemplateTask(row: TemplateTaskRow): ReleaseTemplateTask {
     startTime: row.start_time,
     durationMinutes: row.duration_minutes,
     position: row.position,
-    actionConfig,
+    actionConfig: parseJsonObject(row.action_config),
+    definitionId: row.definition_id,
+    overrides: parseJsonObject(row.overrides) as TemplateTaskOverrides | null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToTaskDefinition(row: TaskDefinitionRow): TaskDefinition {
+  return {
+    id: row.id,
+    name: row.name,
+    label: row.label,
+    description: row.description,
+    actionType: row.action_type as ActionType,
+    dayOffset: row.day_offset,
+    allDay: row.all_day === 1,
+    startTime: row.start_time,
+    durationMinutes: row.duration_minutes,
+    actionConfig: parseJsonObject(row.action_config),
+    configurableFields: parseConfigurableFields(row.configurable_fields),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -334,6 +403,8 @@ export async function createTemplateTask(data: {
     durationMinutes: 30,
     position,
     actionConfig: data.actionConfig ?? null,
+    definitionId: null,
+    overrides: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -386,6 +457,8 @@ export interface TemplateTaskInput {
   startTime?: string | null;
   durationMinutes?: number;
   actionConfig?: Record<string, unknown> | null;
+  definitionId?: string | null;
+  overrides?: TemplateTaskOverrides | null;
 }
 
 export async function replaceTemplateTasks(
@@ -404,12 +477,15 @@ export async function replaceTemplateTasks(
     const allDay = t.allDay ?? true;
     const startTime = allDay ? null : t.startTime ?? null;
     const durationMinutes = t.durationMinutes ?? 30;
+    const definitionId = t.definitionId ?? null;
+    const overrides = t.overrides ?? null;
     await d1Query(
       `INSERT INTO release_template_tasks
          (id, template_id, label, description, action_type, day_offset,
           all_day, start_time, duration_minutes, position, action_config,
+          definition_id, overrides,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         templateId,
@@ -422,6 +498,8 @@ export async function replaceTemplateTasks(
         durationMinutes,
         i,
         t.actionConfig ? JSON.stringify(t.actionConfig) : null,
+        definitionId,
+        overrides ? JSON.stringify(overrides) : null,
         now,
         now,
       ]
@@ -438,11 +516,180 @@ export async function replaceTemplateTasks(
       durationMinutes,
       position: i,
       actionConfig: t.actionConfig ?? null,
+      definitionId,
+      overrides,
       createdAt: now,
       updatedAt: now,
     });
   }
   return created;
+}
+
+// ─── Task Definitions (Library) ────────────────────────────────────────────────
+
+export async function listTaskDefinitions(): Promise<TaskDefinition[]> {
+  const { results } = await d1Query<TaskDefinitionRow>(
+    `SELECT * FROM release_task_definitions ORDER BY name ASC`
+  );
+  return results.map(rowToTaskDefinition);
+}
+
+export async function getTaskDefinition(id: string): Promise<TaskDefinition | null> {
+  const { results } = await d1Query<TaskDefinitionRow>(
+    `SELECT * FROM release_task_definitions WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  return results[0] ? rowToTaskDefinition(results[0]) : null;
+}
+
+/** Map of id → definition. Used by materialization to avoid N+1 lookups. */
+export async function getTaskDefinitionsById(
+  ids: string[],
+): Promise<Map<string, TaskDefinition>> {
+  const out = new Map<string, TaskDefinition>();
+  const unique = Array.from(new Set(ids)).filter((v) => v);
+  if (unique.length === 0) return out;
+  // D1 IN (?,?,?…) — keep it simple; the list is always short (<50).
+  const placeholders = unique.map(() => "?").join(",");
+  const { results } = await d1Query<TaskDefinitionRow>(
+    `SELECT * FROM release_task_definitions WHERE id IN (${placeholders})`,
+    unique,
+  );
+  for (const row of results) out.set(row.id, rowToTaskDefinition(row));
+  return out;
+}
+
+export interface TaskDefinitionInput {
+  name: string;
+  label: string;
+  description?: string | null;
+  actionType: ActionType;
+  dayOffset?: number;
+  allDay?: boolean;
+  startTime?: string | null;
+  durationMinutes?: number;
+  actionConfig?: Record<string, unknown> | null;
+  configurableFields?: ConfigurableField[];
+}
+
+export async function createTaskDefinition(
+  data: TaskDefinitionInput,
+): Promise<TaskDefinition> {
+  const id = newId();
+  const now = new Date().toISOString();
+  const allDay = data.allDay ?? true;
+  const startTime = allDay ? null : data.startTime ?? null;
+  const durationMinutes = data.durationMinutes ?? 30;
+  const dayOffset = data.dayOffset ?? 0;
+  const configurable = data.configurableFields ?? [];
+
+  await d1Query(
+    `INSERT INTO release_task_definitions
+       (id, name, label, description, action_type, day_offset,
+        all_day, start_time, duration_minutes, action_config,
+        configurable_fields, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      data.name,
+      data.label,
+      data.description ?? null,
+      data.actionType,
+      dayOffset,
+      allDay ? 1 : 0,
+      startTime,
+      durationMinutes,
+      data.actionConfig ? JSON.stringify(data.actionConfig) : null,
+      JSON.stringify(configurable),
+      now,
+      now,
+    ],
+  );
+
+  return {
+    id,
+    name: data.name,
+    label: data.label,
+    description: data.description ?? null,
+    actionType: data.actionType,
+    dayOffset,
+    allDay,
+    startTime,
+    durationMinutes,
+    actionConfig: data.actionConfig ?? null,
+    configurableFields: configurable,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export async function updateTaskDefinition(
+  id: string,
+  data: Partial<TaskDefinitionInput>,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const fields: string[] = ["updated_at = ?"];
+  const params: (string | number | null)[] = [now];
+
+  const assign = (col: string, val: string | number | null) => {
+    fields.push(`${col} = ?`);
+    params.push(val);
+  };
+  if (data.name !== undefined) assign("name", data.name);
+  if (data.label !== undefined) assign("label", data.label);
+  if ("description" in data) assign("description", data.description ?? null);
+  if (data.actionType !== undefined) assign("action_type", data.actionType);
+  if (data.dayOffset !== undefined) assign("day_offset", data.dayOffset);
+  if (data.allDay !== undefined) assign("all_day", data.allDay ? 1 : 0);
+  if ("startTime" in data) assign("start_time", data.startTime ?? null);
+  if (data.durationMinutes !== undefined) assign("duration_minutes", data.durationMinutes);
+  if ("actionConfig" in data) {
+    assign("action_config", data.actionConfig ? JSON.stringify(data.actionConfig) : null);
+  }
+  if (data.configurableFields !== undefined) {
+    assign("configurable_fields", JSON.stringify(data.configurableFields));
+  }
+
+  params.push(id);
+  await d1Query(
+    `UPDATE release_task_definitions SET ${fields.join(", ")} WHERE id = ?`,
+    params,
+  );
+}
+
+/** Returns the number of template tasks linked to this definition. */
+export async function countTemplateTasksUsingDefinition(id: string): Promise<number> {
+  const { results } = await d1Query<{ n: number }>(
+    `SELECT COUNT(*) as n FROM release_template_tasks WHERE definition_id = ?`,
+    [id],
+  );
+  return results[0]?.n ?? 0;
+}
+
+/**
+ * Delete a task definition. By default refuses if template tasks still link to
+ * it — pass `detachLinked: true` to clear those links (leaving the template
+ * tasks as inline rows using whatever values were last stored).
+ */
+export async function deleteTaskDefinition(
+  id: string,
+  opts: { detachLinked?: boolean } = {},
+): Promise<void> {
+  const inUse = await countTemplateTasksUsingDefinition(id);
+  if (inUse > 0 && !opts.detachLinked) {
+    throw new Error(
+      `Cannot delete: ${inUse} template task${inUse === 1 ? "" : "s"} still link to this definition`,
+    );
+  }
+  if (inUse > 0 && opts.detachLinked) {
+    await d1Query(
+      `UPDATE release_template_tasks
+         SET definition_id = NULL, overrides = NULL, updated_at = ?
+         WHERE definition_id = ?`,
+      [new Date().toISOString(), id],
+    );
+  }
+  await d1Query(`DELETE FROM release_task_definitions WHERE id = ?`, [id]);
 }
 
 // ─── Task Instances ────────────────────────────────────────────────────────────
@@ -457,20 +704,132 @@ export async function listTaskInstances(
   return results.map(rowToTaskInstance);
 }
 
-async function insertInstanceFromTemplateTask(
+/**
+ * Resolved values for a template task after applying its linked library
+ * definition (if any) and honoring locks vs. configurable overrides. If the
+ * task is inline (no definitionId), template row values are used verbatim.
+ *
+ * `actionType` is always locked — changing it at the use-site would change
+ * what kind of resource gets dispatched, which isn't a reasonable override.
+ */
+interface ResolvedTask {
+  label: string;
+  description: string | null;
+  actionType: ActionType;
+  dayOffset: number;
+  allDay: boolean;
+  startTime: string | null;
+  durationMinutes: number;
+  actionConfig: Record<string, unknown> | null;
+}
+
+function resolveTemplateTask(
+  task: ReleaseTemplateTask,
+  definition: TaskDefinition | null,
+): ResolvedTask {
+  if (!task.definitionId || !definition) {
+    return {
+      label: task.label,
+      description: task.description,
+      actionType: task.actionType,
+      dayOffset: task.dayOffset,
+      allDay: task.allDay,
+      startTime: task.allDay ? null : task.startTime,
+      durationMinutes: task.durationMinutes,
+      actionConfig: task.actionConfig,
+    };
+  }
+
+  const overrides = task.overrides ?? {};
+  const canOverride = new Set<ConfigurableField>(definition.configurableFields);
+
+  const pick = <T>(field: ConfigurableField, defValue: T): T =>
+    canOverride.has(field) && field in overrides
+      ? ((overrides as Record<string, unknown>)[field] as T)
+      : defValue;
+
+  const allDay = pick<boolean>("allDay", definition.allDay);
+  return {
+    label: pick<string>("label", definition.label),
+    description: pick<string | null>("description", definition.description),
+    actionType: definition.actionType,
+    dayOffset: pick<number>("dayOffset", definition.dayOffset),
+    allDay,
+    startTime: allDay ? null : pick<string | null>("startTime", definition.startTime),
+    durationMinutes: pick<number>("durationMinutes", definition.durationMinutes),
+    actionConfig: pick<Record<string, unknown> | null>(
+      "actionConfig",
+      definition.actionConfig,
+    ),
+  };
+}
+
+/**
+ * Gather and resolve every template task that applies to a release, across
+ * every matched template. Result is ordered by (template.priority, task.position)
+ * and deduped by (definitionId, resolvedDayOffset) so a definition shared across
+ * layered templates fires once per distinct offset.
+ */
+async function collectResolvedTasks(
+  release: Pick<Release, "id" | "name">,
+): Promise<Array<{ templateId: string; task: ReleaseTemplateTask; resolved: ResolvedTask }>> {
+  const templates = await listTemplates(); // already sorted by priority ASC
+  const matched = matchTemplates(release.name, templates);
+  if (matched.length === 0) return [];
+
+  // Load tasks for every matched template in parallel.
+  const taskLists = await Promise.all(
+    matched.map((t) => listTemplateTasks(t.id)),
+  );
+
+  // Resolve library definitions referenced anywhere in the matched set.
+  const allDefIds = taskLists
+    .flat()
+    .map((t) => t.definitionId)
+    .filter((v): v is string => !!v);
+  const definitions = await getTaskDefinitionsById(allDefIds);
+
+  const seenKeys = new Set<string>();
+  const out: Array<{ templateId: string; task: ReleaseTemplateTask; resolved: ResolvedTask }> = [];
+
+  for (let i = 0; i < matched.length; i++) {
+    const tmpl = matched[i];
+    const tasks = taskLists[i]; // already ordered by position ASC
+
+    for (const task of tasks) {
+      const def = task.definitionId ? definitions.get(task.definitionId) ?? null : null;
+      const resolved = resolveTemplateTask(task, def);
+
+      // Dedup only when a library definition is in play. Inline tasks always
+      // materialize — there's no reliable identity to dedup on.
+      if (task.definitionId) {
+        const key = `${task.definitionId}:${resolved.dayOffset}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+      }
+
+      out.push({ templateId: tmpl.id, task, resolved });
+    }
+  }
+
+  return out;
+}
+
+async function insertInstanceFromResolved(
   releaseId: string,
   templateId: string,
   release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
-  task: ReleaseTemplateTask,
+  templateTaskId: string,
+  resolved: ResolvedTask,
   now: string,
 ): Promise<ReleaseTaskInstance> {
   const id = newId();
   const dueDate = release.releaseDate
-    ? addDays(release.releaseDate, task.dayOffset)
+    ? addDays(release.releaseDate, resolved.dayOffset)
     : null;
-  const ctx = buildMergeContext(release, dueDate, task.dayOffset);
-  const label = renderMergeFields(task.label, ctx) ?? task.label;
-  const description = renderMergeFields(task.description, ctx);
+  const ctx = buildMergeContext(release, dueDate, resolved.dayOffset);
+  const label = renderMergeFields(resolved.label, ctx) ?? resolved.label;
+  const description = renderMergeFields(resolved.description, ctx);
 
   await d1Query(
     `INSERT INTO release_task_instances
@@ -481,17 +840,17 @@ async function insertInstanceFromTemplateTask(
     [
       id,
       releaseId,
-      task.id,
+      templateTaskId,
       templateId,
       label,
       description,
-      task.actionType,
-      task.dayOffset,
-      task.allDay ? 1 : 0,
-      task.allDay ? null : task.startTime,
-      task.durationMinutes,
+      resolved.actionType,
+      resolved.dayOffset,
+      resolved.allDay ? 1 : 0,
+      resolved.allDay ? null : resolved.startTime,
+      resolved.durationMinutes,
       dueDate,
-      task.actionConfig ? JSON.stringify(task.actionConfig) : null,
+      resolved.actionConfig ? JSON.stringify(resolved.actionConfig) : null,
       now,
       now,
     ],
@@ -500,18 +859,18 @@ async function insertInstanceFromTemplateTask(
   return {
     id,
     releaseId,
-    templateTaskId: task.id,
+    templateTaskId,
     templateId,
     label,
     description,
-    actionType: task.actionType,
-    dayOffset: task.dayOffset,
-    allDay: task.allDay,
-    startTime: task.allDay ? null : task.startTime,
-    durationMinutes: task.durationMinutes,
+    actionType: resolved.actionType,
+    dayOffset: resolved.dayOffset,
+    allDay: resolved.allDay,
+    startTime: resolved.allDay ? null : resolved.startTime,
+    durationMinutes: resolved.durationMinutes,
     dueDate,
     status: "pending",
-    actionConfig: task.actionConfig,
+    actionConfig: resolved.actionConfig,
     externalId: null,
     externalUrl: null,
     lastDispatchError: null,
@@ -522,59 +881,69 @@ async function insertInstanceFromTemplateTask(
 }
 
 /**
- * Generate task instances for a release from a matched template.
- * Skips generation if instances already exist (idempotent).
+ * Generate task instances for a release by layering ALL matching templates.
+ * Idempotent: skips if any instances already exist. No-match = no instances
+ * (the release shows up as "unmatched" in the UI).
  */
 export async function generateTaskInstances(
   release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
-  templateId: string,
 ): Promise<ReleaseTaskInstance[]> {
-  // Idempotency check
   const { results: existing } = await d1Query<{ id: string }>(
     `SELECT id FROM release_task_instances WHERE release_id = ? LIMIT 1`,
     [release.id]
   );
   if (existing.length > 0) return listTaskInstances(release.id);
 
-  const tasks = await listTemplateTasks(templateId);
+  const collected = await collectResolvedTasks(release);
+  if (collected.length === 0) return [];
+
   const now = new Date().toISOString();
   const created: ReleaseTaskInstance[] = [];
-
-  for (const task of tasks) {
+  for (const { templateId, task, resolved } of collected) {
     created.push(
-      await insertInstanceFromTemplateTask(release.id, templateId, release, task, now),
+      await insertInstanceFromResolved(
+        release.id,
+        templateId,
+        release,
+        task.id,
+        resolved,
+        now,
+      ),
     );
   }
-
   return created;
 }
 
 /**
- * Regenerate task instances for a release (clears existing pending instances first).
- * Used when the matched template changes or the user manually triggers regeneration.
+ * Regenerate task instances: drops rows that haven't dispatched to Google yet
+ * (preserving any with an external_id so we don't orphan live resources), then
+ * re-materializes from the currently matching templates.
  */
 export async function regenerateTaskInstances(
   release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
-  templateId: string,
 ): Promise<ReleaseTaskInstance[]> {
-  // Keep rows that actually dispatched to Google (have an external_id); drop
-  // everything else. Historical 'skipped' rows from the old UI fall into this
-  // bucket — the new status-page model has no user-settable skip.
   await d1Query(
     `DELETE FROM release_task_instances WHERE release_id = ? AND external_id IS NULL`,
     [release.id]
   );
 
-  const tasks = await listTemplateTasks(templateId);
+  const collected = await collectResolvedTasks(release);
+  if (collected.length === 0) return listTaskInstances(release.id);
+
   const now = new Date().toISOString();
   const created: ReleaseTaskInstance[] = [];
-
-  for (const task of tasks) {
+  for (const { templateId, task, resolved } of collected) {
     created.push(
-      await insertInstanceFromTemplateTask(release.id, templateId, release, task, now),
+      await insertInstanceFromResolved(
+        release.id,
+        templateId,
+        release,
+        task.id,
+        resolved,
+        now,
+      ),
     );
   }
-
   return created;
 }
 
@@ -686,14 +1055,13 @@ export async function setTaskInstanceDueDate(
 }
 
 /**
- * Find the matching template for a release name and generate instances if needed.
+ * Generate task instances for a release by layering ALL matching templates.
  * Safe to call on every webhook event — generateTaskInstances is idempotent.
+ * If no template matches, no instances are created (the release shows as
+ * "unmatched" in the UI — typically a typo in the Jira version name).
  */
 export async function maybeGenerateInstances(
   release: Pick<Release, "id" | "name" | "description" | "releaseDate">,
 ): Promise<void> {
-  const templates = await listTemplates();
-  const matched = matchTemplate(release.name, templates);
-  if (!matched) return;
-  await generateTaskInstances(release, matched.id);
+  await generateTaskInstances(release);
 }

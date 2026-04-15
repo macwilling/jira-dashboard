@@ -1,3 +1,5 @@
+export type ApprovalStatus = "none" | "pending" | "approved" | "cancelled";
+
 export interface Release {
   id: string;
   projectId: string;
@@ -11,6 +13,15 @@ export interface Release {
   jiraRaw: unknown;
   receivedAt: string;
   updatedAt: string;
+  /** Gate state for auto-dispatch. "none" = no gate (legacy or unconfigured). */
+  approvalStatus: ApprovalStatus;
+  /** Monotonic counter. Bumped on Jira updates while pending so stale Slack clicks can be rejected. */
+  approvalVersion: number;
+  approvalMessageTs: string | null;
+  approvalMessageChannel: string | null;
+  approvedAt: string | null;
+  /** Slack user ID of whoever clicked Approve — e.g. "U12345". */
+  approvedBy: string | null;
 }
 
 /** Shape of the `version` object in a Jira webhook payload. */
@@ -80,6 +91,55 @@ export interface ReleaseTemplate {
   updatedAt: string;
 }
 
+/**
+ * Fields on a TaskDefinition that a template-task use-site may override.
+ * Any field NOT listed in a definition's `configurableFields` is locked —
+ * the definition's value is enforced at materialize time regardless of what's
+ * stored on the template task row.
+ */
+export type ConfigurableField =
+  | "label"
+  | "description"
+  | "dayOffset"
+  | "allDay"
+  | "startTime"
+  | "durationMinutes"
+  | "actionConfig";
+
+/**
+ * A reusable action definition in the library. Templates can link tasks to a
+ * definition so the same action ("Create deploy calendar event") is materialized
+ * consistently across many templates. The definition author decides per-field
+ * whether use-sites may override (`configurableFields`) or must use the
+ * definition's value (locked — everything not in that list).
+ */
+export interface TaskDefinition {
+  id: string;
+  name: string;
+  label: string;
+  description: string | null;
+  actionType: ActionType;
+  dayOffset: number;
+  allDay: boolean;
+  startTime: string | null;
+  durationMinutes: number;
+  actionConfig: Record<string, unknown> | null;
+  configurableFields: ConfigurableField[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Per-use-site overrides. Only keys in the definition's configurableFields are honored. */
+export interface TemplateTaskOverrides {
+  label?: string;
+  description?: string | null;
+  dayOffset?: number;
+  allDay?: boolean;
+  startTime?: string | null;
+  durationMinutes?: number;
+  actionConfig?: Record<string, unknown> | null;
+}
+
 export interface ReleaseTemplateTask {
   id: string;
   templateId: string;
@@ -92,6 +152,10 @@ export interface ReleaseTemplateTask {
   durationMinutes: number;
   position: number;
   actionConfig: Record<string, unknown> | null;
+  /** Null = inline task. Non-null = linked to the library. */
+  definitionId: string | null;
+  /** Honored only for fields in the linked definition's configurableFields. */
+  overrides: TemplateTaskOverrides | null;
   createdAt: string;
   updatedAt: string;
 }

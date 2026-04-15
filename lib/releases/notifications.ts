@@ -11,7 +11,7 @@
 
 import { listTemplates } from "./templates-store";
 import { listNotificationsForEvent } from "./notifications-store";
-import { matchTemplate } from "./matcher";
+import { matchTemplates } from "./matcher";
 import {
   buildMergeContext,
   renderMergeFields,
@@ -52,10 +52,17 @@ export async function fireReleaseEvent(opts: FireEventOptions): Promise<void> {
     }
 
     const templates = await listTemplates();
-    const matched = matchTemplate(release.name, templates);
-    if (!matched) return;
+    const matched = matchTemplates(release.name, templates);
+    if (matched.length === 0) return;
 
-    const rules = await listNotificationsForEvent(matched.id, eventType);
+    // Layered templates: gather rules from every matched template. Each rule
+    // fires independently — a release that matches both "Base" and "Mobile"
+    // layers will get notifications from both if they both have rules for
+    // this event type.
+    const ruleLists = await Promise.all(
+      matched.map((t) => listNotificationsForEvent(t.id, eventType)),
+    );
+    const rules = ruleLists.flat();
     if (rules.length === 0) return;
 
     const ctx = buildMergeContext(release, null, 0, event);

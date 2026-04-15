@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -14,6 +14,10 @@ import {
   Info,
   X,
   Bell,
+  Lock,
+  Link2,
+  Link2Off,
+  Library,
 } from "lucide-react";
 import { SlackTargetPicker } from "@/components/releases/SlackTargetPicker";
 import {
@@ -56,15 +60,19 @@ import {
   buildSampleMergeContext,
   renderMergeFields,
 } from "@/lib/releases/merge-fields";
+import { sanitizeCalendarHtml } from "@/lib/releases/html-sanitize";
 import { cn } from "@/lib/utils";
 import type {
   ActionType,
+  ConfigurableField,
   NotificationButton,
   ReleaseEventType,
   ReleaseNotification,
   ReleaseTemplate,
   ReleaseTemplateTask,
   ReleaseType,
+  TaskDefinition,
+  TemplateTaskOverrides,
 } from "@/lib/releases/types";
 import type { TaskList, CalendarListEntry } from "@/lib/google/client";
 
@@ -97,6 +105,28 @@ const TEXTAREA_CLASS =
   "w-full min-w-0 rounded-md border border-input bg-transparent px-2.5 py-1.5 text-sm transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 resize-y";
 const SELECT_CLASS =
   "h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
+
+/** Field label with an optional lock icon. Rendered when a library-linked
+ *  task has the field locked — tells the author the input below is read-only. */
+function LockedLabel({
+  children,
+  locked,
+}: {
+  children: ReactNode;
+  locked: boolean;
+}) {
+  return (
+    <Label className="text-xxs uppercase tracking-wide text-muted-foreground inline-flex items-center gap-1">
+      {children}
+      {locked && (
+        <Lock
+          className="h-2.5 w-2.5"
+          aria-label="Locked by library definition"
+        />
+      )}
+    </Label>
+  );
+}
 
 function ActionPickerButton({
   active,
@@ -195,6 +225,8 @@ interface DraftTask {
   durationMinutes: number;
   taskListId: string;   // for google_task
   calendarId: string;   // for calendar_event
+  /** Null = inline task. Non-null = linked to a library definition. */
+  definitionId: string | null;
 }
 
 let keyCounter = 0;
@@ -202,6 +234,13 @@ function newKey() {
   return `task-${++keyCounter}-${Date.now()}`;
 }
 
+/**
+ * Convert a persisted template task into editor state. When linked to a
+ * library definition, the raw stored values in the row may be stale relative
+ * to the definition's locked fields — but that's fine here because the
+ * SortableTaskRow renders locked fields from the definition directly, and
+ * materialization at dispatch time always enforces locks.
+ */
 function taskToRow(t: ReleaseTemplateTask): DraftTask {
   const config = t.actionConfig ?? {};
   return {
@@ -215,6 +254,26 @@ function taskToRow(t: ReleaseTemplateTask): DraftTask {
     durationMinutes: t.durationMinutes,
     taskListId: (config.taskListId as string | undefined) ?? "@default",
     calendarId: (config.calendarId as string | undefined) ?? "primary",
+    definitionId: t.definitionId,
+  };
+}
+
+/** Hydrate a fresh draft from a library definition — pre-fills every field
+ *  from the definition's defaults, then use-site can override configurable ones. */
+function definitionToDraft(def: TaskDefinition): DraftTask {
+  const config = def.actionConfig ?? {};
+  return {
+    _key: newKey(),
+    label: def.label,
+    description: def.description ?? "",
+    actionType: def.actionType,
+    dayOffset: def.dayOffset,
+    allDay: def.allDay,
+    startTime: def.startTime ?? "09:00",
+    durationMinutes: def.durationMinutes,
+    taskListId: (config.taskListId as string | undefined) ?? "@default",
+    calendarId: (config.calendarId as string | undefined) ?? "primary",
+    definitionId: def.id,
   };
 }
 
@@ -230,6 +289,7 @@ function freshTask(): DraftTask {
     durationMinutes: 30,
     taskListId: "@default",
     calendarId: "primary",
+    definitionId: null,
   };
 }
 
@@ -355,6 +415,7 @@ function SortableTaskRow({
   onDelete,
   taskLists,
   calendars,
+  definitions,
 }: {
   task: DraftTask;
   onChange: (updated: DraftTask) => void;
@@ -362,7 +423,49 @@ function SortableTaskRow({
   onDelete: () => void;
   taskLists: TaskList[];
   calendars: CalendarListEntry[];
+  definitions: TaskDefinition[];
 }) {
+  // Library linkage: when linked, certain fields are locked to the definition's
+  // value (materialization enforces this regardless of what's stored on the row).
+  // We reflect this in the UI by disabling locked inputs and showing a lock icon,
+  // so the author sees "what this task will actually do" at a glance.
+  const linkedDefinition = task.definitionId
+    ? definitions.find((d) => d.id === task.definitionId) ?? null
+    : null;
+  const configurable = new Set<ConfigurableField>(
+    linkedDefinition?.configurableFields ?? [],
+  );
+  const isLocked = (field: ConfigurableField): boolean =>
+    !!linkedDefinition && !configurable.has(field);
+
+  const linkToDefinition = (defId: string) => {
+    const def = definitions.find((d) => d.id === defId);
+    if (!def) return;
+    const config = def.actionConfig ?? {};
+    onChange({
+      ...task,
+      // Adopt the definition's values as a starting point for the use-site.
+      // Configurable fields are then editable as overrides; locked fields
+      // stay pinned to the definition.
+      label: def.label,
+      description: def.description ?? "",
+      actionType: def.actionType,
+      dayOffset: def.dayOffset,
+      allDay: def.allDay,
+      startTime: def.startTime ?? "09:00",
+      durationMinutes: def.durationMinutes,
+      taskListId: (config.taskListId as string | undefined) ?? task.taskListId,
+      calendarId: (config.calendarId as string | undefined) ?? task.calendarId,
+      definitionId: def.id,
+    });
+  };
+
+  const detach = () => onChange({ ...task, definitionId: null });
+
+  // Definitions compatible with this task's action type. Switching action types
+  // via a library link is too surprising, so we filter the picker. Inline tasks
+  // can pick from any; when we pick, we'll adopt the definition's action type.
+  const availableDefinitions = definitions;
   const {
     attributes,
     listeners,
@@ -451,8 +554,15 @@ function SortableTaskRow({
           <GripVertical className="h-4 w-4" />
         </button>
 
-        {/* iOS-style segmented control for action type */}
-        <div className="inline-flex rounded-lg bg-muted p-0.5 gap-0.5">
+        {/* iOS-style segmented control for action type — locked when linked
+            to a library definition, since actionType is always enforced. */}
+        <div
+          className={cn(
+            "inline-flex rounded-lg bg-muted p-0.5 gap-0.5",
+            linkedDefinition && "opacity-60 pointer-events-none",
+          )}
+          title={linkedDefinition ? "Action type is set by the library definition" : undefined}
+        >
           <ActionPickerButton
             active={isGoogleTask}
             onClick={() => onChange({ ...task, actionType: "google_task" })}
@@ -496,22 +606,72 @@ function SortableTaskRow({
         </div>
       </div>
 
+      {/* Library linkage strip — either shows current link (with detach) or
+          offers a picker. Placed right under the header so the author always
+          knows whether this row is library-backed before editing fields. */}
+      <div className="px-3 pt-2.5">
+        {linkedDefinition ? (
+          <div className="flex items-center gap-2 rounded-md bg-primary/5 border border-primary/20 px-2.5 py-1.5 text-xxs">
+            <Link2 className="h-3 w-3 text-primary shrink-0" />
+            <span className="text-muted-foreground shrink-0">Linked to library:</span>
+            <span className="font-medium text-foreground truncate">
+              {linkedDefinition.name}
+            </span>
+            {linkedDefinition.configurableFields.length > 0 ? (
+              <span className="text-muted-foreground hidden md:inline">
+                · configurable: {linkedDefinition.configurableFields.join(", ")}
+              </span>
+            ) : (
+              <span className="text-muted-foreground hidden md:inline">
+                · all fields locked
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={detach}
+              title="Detach from library — keep current values as an inline task"
+              className="ml-auto inline-flex items-center gap-1 h-6 px-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            >
+              <Link2Off className="h-3 w-3" />
+              Detach
+            </button>
+          </div>
+        ) : availableDefinitions.length > 0 ? (
+          <div className="flex items-center gap-2">
+            <Library className="h-3 w-3 text-muted-foreground shrink-0" />
+            <select
+              value=""
+              onChange={(e) => {
+                if (e.target.value) linkToDefinition(e.target.value);
+              }}
+              className={cn(SELECT_CLASS, "h-7 text-xxs text-muted-foreground max-w-xs")}
+            >
+              <option value="">Link to library definition…</option>
+              {availableDefinitions.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} ({d.actionType === "calendar_event" ? "Calendar" : "Task"})
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+      </div>
+
       {/* Body */}
       <div className="px-3 pt-3 pb-4 space-y-4">
         {/* Title */}
         <div className="space-y-1.5">
-          <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
-            Title
-          </Label>
+          <LockedLabel locked={isLocked("label")}>Title</LockedLabel>
           <div className="flex items-center gap-1.5">
             <input
               ref={labelRef}
               value={task.label}
               onChange={(e) => onChange({ ...task, label: e.target.value })}
               placeholder={isCalendarEvent ? "Event title…" : "Task title…"}
+              disabled={isLocked("label")}
               className={cn(INPUT_CLASS, "h-9 text-sm")}
             />
-            <MergeFieldPicker onInsert={insertToLabel} />
+            {!isLocked("label") && <MergeFieldPicker onInsert={insertToLabel} />}
           </div>
           {labelPreview && (
             <div className="text-xxs text-muted-foreground truncate">
@@ -523,14 +683,13 @@ function SortableTaskRow({
 
         {/* Description */}
         <div className="space-y-1.5">
-          <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
-            Notes
-          </Label>
+          <LockedLabel locked={isLocked("description")}>Notes</LockedLabel>
           <div className="flex items-start gap-1.5">
             <textarea
               ref={descRef}
               value={task.description}
               onChange={(e) => onChange({ ...task, description: e.target.value })}
+              disabled={isLocked("description")}
               placeholder={
                 isCalendarEvent
                   ? "Details shown on the calendar event…"
@@ -546,9 +705,18 @@ function SortableTaskRow({
               <div className="uppercase tracking-wide text-muted-foreground/80 mb-0.5">
                 Preview — sample release
               </div>
-              <div className="whitespace-pre-wrap break-words text-foreground/80">
-                {descPreview}
-              </div>
+              {isCalendarEvent ? (
+                <div
+                  className="whitespace-pre-wrap break-words text-foreground/80 [&_a]:underline [&_a]:text-primary"
+                  dangerouslySetInnerHTML={{
+                    __html: sanitizeCalendarHtml(descPreview),
+                  }}
+                />
+              ) : (
+                <div className="whitespace-pre-wrap break-words text-foreground/80">
+                  {descPreview}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -556,14 +724,17 @@ function SortableTaskRow({
         {/* When */}
         <div className="space-y-1.5">
           <div className="flex items-baseline justify-between">
-            <Label className="text-xxs uppercase tracking-wide text-muted-foreground">
-              When
-            </Label>
+            <LockedLabel locked={isLocked("dayOffset")}>When</LockedLabel>
             <span className="text-xxs text-muted-foreground italic">
               {whenPreviewLine}
             </span>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div
+            className={cn(
+              "flex items-center gap-2 flex-wrap",
+              isLocked("dayOffset") && "opacity-60 pointer-events-none",
+            )}
+          >
             <div className="inline-flex rounded-lg bg-muted p-0.5 gap-0.5">
               {(
                 [
@@ -613,12 +784,15 @@ function SortableTaskRow({
 
             {isGoogleTask && (
               <div className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-2">
-                <span className="text-xs text-muted-foreground">Task list</span>
+                <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+                  Task list {isLocked("actionConfig") && <Lock className="h-2.5 w-2.5" />}
+                </span>
                 {taskLists.length > 0 ? (
                   <select
                     value={task.taskListId}
                     onChange={(e) => onChange({ ...task, taskListId: e.target.value })}
-                    className={cn(SELECT_CLASS, "h-8 w-full max-w-sm text-xs")}
+                    disabled={isLocked("actionConfig")}
+                    className={cn(SELECT_CLASS, "h-8 w-full max-w-sm text-xs disabled:opacity-50")}
                   >
                     <option value="@default">Default task list</option>
                     {taskLists.map((l) => (
@@ -630,6 +804,7 @@ function SortableTaskRow({
                     value={task.taskListId}
                     onChange={(e) => onChange({ ...task, taskListId: e.target.value })}
                     placeholder="@default"
+                    disabled={isLocked("actionConfig")}
                     className={cn(INPUT_CLASS, "h-8 font-mono text-xs max-w-sm")}
                   />
                 )}
@@ -642,12 +817,15 @@ function SortableTaskRow({
 
             {isCalendarEvent && (
               <div className="grid grid-cols-[5rem_1fr] items-center gap-x-3 gap-y-2">
-                <span className="text-xs text-muted-foreground">Calendar</span>
+                <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+                  Calendar {isLocked("actionConfig") && <Lock className="h-2.5 w-2.5" />}
+                </span>
                 {calendars.length > 0 ? (
                   <select
                     value={task.calendarId}
                     onChange={(e) => onChange({ ...task, calendarId: e.target.value })}
-                    className={cn(SELECT_CLASS, "h-8 w-full max-w-sm text-xs")}
+                    disabled={isLocked("actionConfig")}
+                    className={cn(SELECT_CLASS, "h-8 w-full max-w-sm text-xs disabled:opacity-50")}
                   >
                     <option value="primary">Primary calendar</option>
                     {calendars.map((c) => (
@@ -661,13 +839,21 @@ function SortableTaskRow({
                     value={task.calendarId}
                     onChange={(e) => onChange({ ...task, calendarId: e.target.value })}
                     placeholder="primary"
+                    disabled={isLocked("actionConfig")}
                     className={cn(INPUT_CLASS, "h-8 font-mono text-xs max-w-sm")}
                   />
                 )}
 
-                <span className="text-xs text-muted-foreground">Time</span>
+                <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+                  Time {(isLocked("allDay") || isLocked("startTime") || isLocked("durationMinutes")) && <Lock className="h-2.5 w-2.5" />}
+                </span>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <div className="inline-flex rounded-lg bg-muted p-0.5 gap-0.5">
+                  <div
+                    className={cn(
+                      "inline-flex rounded-lg bg-muted p-0.5 gap-0.5",
+                      isLocked("allDay") && "opacity-60 pointer-events-none",
+                    )}
+                  >
                     <button
                       type="button"
                       onClick={() => onChange({ ...task, allDay: true })}
@@ -699,6 +885,7 @@ function SortableTaskRow({
                         type="time"
                         value={task.startTime || "09:00"}
                         onChange={(e) => onChange({ ...task, startTime: e.target.value })}
+                        disabled={isLocked("startTime")}
                         className={cn(INPUT_CLASS, "h-8 w-28 text-xs font-mono")}
                       />
                       <span className="text-xs text-muted-foreground">for</span>
@@ -711,6 +898,7 @@ function SortableTaskRow({
                         onChange={(e) =>
                           onChange({ ...task, durationMinutes: parseInt(e.target.value, 10) || 30 })
                         }
+                        disabled={isLocked("durationMinutes")}
                         className={cn(INPUT_CLASS, "h-8 w-16 text-xs font-mono")}
                       />
                       <span className="text-xs text-muted-foreground">min</span>
@@ -1038,6 +1226,7 @@ export default function TemplateEditorPage() {
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
   const [calendars, setCalendars] = useState<CalendarListEntry[]>([]);
   const [googleError, setGoogleError] = useState<string | null>(null);
+  const [definitions, setDefinitions] = useState<TaskDefinition[]>([]);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -1074,6 +1263,11 @@ export default function TemplateEditorPage() {
         if (errs.length) setGoogleError(errs.join(" · "));
       })
       .catch((e) => setGoogleError((e as Error).message));
+
+    fetch("/api/releases/task-definitions")
+      .then((r) => r.json())
+      .then((d) => setDefinitions(d.definitions ?? []))
+      .catch(() => {});
   }, [id]);
 
   // Clear the "Saved" confirmation if the user touches anything.
@@ -1092,6 +1286,12 @@ export default function TemplateEditorPage() {
     });
   }, []);
 
+  const definitionsById = useMemo(() => {
+    const m = new Map<string, TaskDefinition>();
+    for (const d of definitions) m.set(d.id, d);
+    return m;
+  }, [definitions]);
+
   const handleSave = async () => {
     if (!name.trim()) return;
     setSaving(true);
@@ -1103,21 +1303,53 @@ export default function TemplateEditorPage() {
         name: name.trim(),
         platformPrefixes: platformPrefixes.length > 0 ? platformPrefixes : null,
         releaseTypes: releaseTypes.length > 0 ? releaseTypes : null,
-        tasks: tasks.map((t) => ({
-          label: t.label,
-          description: t.description.trim() || null,
-          actionType: t.actionType,
-          dayOffset: t.dayOffset,
-          allDay: t.allDay,
-          startTime: t.allDay ? null : (t.startTime || null),
-          durationMinutes: t.durationMinutes,
-          actionConfig:
+        tasks: tasks.map((t) => {
+          const actionConfig =
             t.actionType === "google_task"
               ? { taskListId: t.taskListId || "@default" }
               : t.actionType === "calendar_event"
               ? { calendarId: t.calendarId || "primary" }
-              : null,
-        })),
+              : null;
+
+          // For library-linked tasks, persist the use-site's values for every
+          // configurable field as `overrides`. Locked fields come from the
+          // definition at materialize time regardless of what's stored on the
+          // row, but we still persist them so the row is coherent if the task
+          // is later detached from the library.
+          let overrides: TemplateTaskOverrides | null = null;
+          if (t.definitionId) {
+            const def = definitionsById.get(t.definitionId);
+            if (def) {
+              const canOverride = new Set<ConfigurableField>(def.configurableFields);
+              overrides = {};
+              if (canOverride.has("label")) overrides.label = t.label;
+              if (canOverride.has("description"))
+                overrides.description = t.description.trim() || null;
+              if (canOverride.has("dayOffset")) overrides.dayOffset = t.dayOffset;
+              if (canOverride.has("allDay")) overrides.allDay = t.allDay;
+              if (canOverride.has("startTime"))
+                overrides.startTime = t.allDay ? null : t.startTime || null;
+              if (canOverride.has("durationMinutes"))
+                overrides.durationMinutes = t.durationMinutes;
+              if (canOverride.has("actionConfig"))
+                overrides.actionConfig = actionConfig;
+              if (Object.keys(overrides).length === 0) overrides = null;
+            }
+          }
+
+          return {
+            label: t.label,
+            description: t.description.trim() || null,
+            actionType: t.actionType,
+            dayOffset: t.dayOffset,
+            allDay: t.allDay,
+            startTime: t.allDay ? null : t.startTime || null,
+            durationMinutes: t.durationMinutes,
+            actionConfig,
+            definitionId: t.definitionId,
+            overrides,
+          };
+        }),
         notifications: notifications.map((n) => ({
           eventType: n.eventType,
           message: n.message,
@@ -1267,15 +1499,33 @@ export default function TemplateEditorPage() {
                 Use the <span className="inline-flex items-center gap-0.5 font-medium">⚡ button</span> next to a field to insert merge fields like <code className="bg-muted px-1 rounded">{"{{release.name}}"}</code>.
               </p>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs gap-1"
-              onClick={() => setTasks((prev) => [...prev, freshTask()])}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add task
-            </Button>
+            <div className="flex items-center gap-1.5">
+              {definitions.length > 0 && (
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const def = definitions.find((d) => d.id === e.target.value);
+                    if (def) setTasks((prev) => [...prev, definitionToDraft(def)]);
+                  }}
+                  className="h-7 rounded-md border border-input bg-background px-2 text-xs text-muted-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                  title="Add a task pre-linked to a library definition"
+                >
+                  <option value="">+ Add from library…</option>
+                  {definitions.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                onClick={() => setTasks((prev) => [...prev, freshTask()])}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add task
+              </Button>
+            </div>
           </div>
 
           {tasks.length === 0 ? (
@@ -1305,6 +1555,7 @@ export default function TemplateEditorPage() {
                         task={task}
                         taskLists={taskLists}
                         calendars={calendars}
+                        definitions={definitions}
                         onChange={(updated) =>
                           setTasks((prev) =>
                             prev.map((t) => (t._key === updated._key ? updated : t))

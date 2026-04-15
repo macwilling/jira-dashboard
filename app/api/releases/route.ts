@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { listReleases } from "@/lib/releases/store";
 import { listTemplates, listTaskInstances } from "@/lib/releases/templates-store";
-import { matchTemplate } from "@/lib/releases/matcher";
+import { matchTemplates } from "@/lib/releases/matcher";
 import { summarizeSyncStates } from "@/lib/releases/sync-state";
 
 // Hits Cloudflare D1 at request time — never prerender.
@@ -16,13 +16,11 @@ export async function GET() {
 
     const result = await Promise.all(
       releases.map(async (release) => {
-        const matched = matchTemplate(release.name, templates);
+        const matched = matchTemplates(release.name, templates);
         const instances = await listTaskInstances(release.id);
         return {
           ...release,
-          matchedTemplate: matched
-            ? { id: matched.id, name: matched.name }
-            : null,
+          matchedTemplates: matched.map((t) => ({ id: t.id, name: t.name })),
           syncSummary: summarizeSyncStates(instances),
         };
       })
