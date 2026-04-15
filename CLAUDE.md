@@ -52,10 +52,16 @@ A PM-facing view for tracking story-level progress and identifying blockers. See
 - **Enriched link data** — `TicketLinkDef` includes `targetType`, `targetSummary`, `targetStatus`, `targetStatusCategory`, `rawDescription`. This lets us show task chips for linked tickets not in the sprint without extra API calls.
 - **Scope toggle** — `/api/jira/tickets?scope=all-open` overrides JQL to fetch all non-closed issues across the project.
 
+### Release Management (`/releases`)
+
+Automated release checklist pipeline: Jira version webhooks → D1 → template matching → task instance generation → (optional) Slack approval gate → dispatch to Google Tasks / Calendar → Slack notifications. See `docs/release-flow.md` for the full end-to-end flow with mermaid diagram. **Keep that doc in sync when modifying any file under `lib/releases/`, `app/api/webhooks/jira/version/`, `app/api/webhooks/slack/interactive/`, or `app/api/releases/`.**
+
 ### Pages
 
 - `/` — Main dashboard (client component)
 - `/progress` — Story progress view with filters (scope, fix version, epic)
+- `/releases` — Release list + per-release task dispatch status
+- `/releases/templates`, `/releases/task-library` — Template + task library config
 - `/settings` — Configuration UI for JQL filter, L2 labels, sprint field
 
 ## Conventions

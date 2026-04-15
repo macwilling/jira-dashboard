@@ -51,7 +51,12 @@ const config: Config = {
         },
       },
       fontSize: {
-        xxs: ["0.6875rem", { lineHeight: "1rem" }],
+        xxs: ["0.8125rem", { lineHeight: "1.25rem" }], // 13px — was "tiny" helper text
+        xs: ["0.875rem", { lineHeight: "1.3rem" }],    // 14px — GitHub body size
+        sm: ["0.9375rem", { lineHeight: "1.4rem" }],   // 15px
+        base: ["1rem", { lineHeight: "1.5rem" }],      // 16px
+        lg: ["1.125rem", { lineHeight: "1.65rem" }],   // 18px
+        xl: ["1.25rem", { lineHeight: "1.8rem" }],     // 20px
       },
       borderRadius: {
         lg: "var(--radius)",

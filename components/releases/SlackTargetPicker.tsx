@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { Hash, Lock, User, AlertTriangle, Loader2 } from "lucide-react";
+import { Popover } from "@base-ui/react/popover";
 import { Button } from "@/components/ui/button";
 import {
-  CommandDialog,
+  Command,
   CommandEmpty,
   CommandGroup,
   CommandInput,
@@ -142,17 +143,20 @@ export function SlackTargetPicker({
         : Hash;
 
   return (
-    <>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className={cn(
-          "h-8 justify-start gap-1.5 font-normal text-xs",
-          !value && "text-muted-foreground",
-          className,
-        )}
-        onClick={() => setOpen(true)}
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger
+        render={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className={cn(
+              "h-8 justify-start gap-1.5 font-normal text-xs",
+              !value && "text-muted-foreground",
+              className,
+            )}
+          />
+        }
       >
         {selectedUser?.avatar ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -165,88 +169,91 @@ export function SlackTargetPicker({
           <LeadingIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         )}
         <span className="truncate">{label}</span>
-      </Button>
+      </Popover.Trigger>
 
-      <CommandDialog
-        open={open}
-        onOpenChange={setOpen}
-        title="Pick a Slack channel or user"
-        description="Fires the notification to the selected target."
-      >
-        <CommandInput placeholder="Search channels and people…" />
-        <CommandList>
-          {directory.loading && (
-            <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" /> Loading Slack directory…
-            </div>
-          )}
-          {directory.error && (
-            <div className="px-3 py-3 text-xs text-destructive space-y-1">
-              <div className="font-medium">Couldn&apos;t load Slack directory</div>
-              <div className="text-muted-foreground">{directory.error}</div>
-            </div>
-          )}
-          <CommandEmpty>No matches.</CommandEmpty>
+      <Popover.Portal>
+        <Popover.Positioner sideOffset={4} align="start" className="z-50">
+          <Popover.Popup
+            className="w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-lg ring-1 ring-foreground/10 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+            style={{ minWidth: "var(--anchor-width)" }}
+          >
+            <Command className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xxs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group]]:px-1 [&_[cmdk-input]]:h-9 [&_[cmdk-item]]:rounded-md [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-2">
+              <CommandInput placeholder="Search channels and people…" />
+              <CommandList className="max-h-72 py-1">
+                {directory.loading && (
+                  <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Loading Slack directory…
+                  </div>
+                )}
+                {directory.error && (
+                  <div className="px-3 py-3 text-xs text-destructive space-y-1">
+                    <div className="font-medium">Couldn&apos;t load Slack directory</div>
+                    <div className="text-muted-foreground">{directory.error}</div>
+                  </div>
+                )}
+                <CommandEmpty>No matches.</CommandEmpty>
 
-          {directory.channels.length > 0 && (
-            <CommandGroup heading="Channels">
-              {directory.channels.map((c) => (
-                <CommandItem
-                  key={c.id}
-                  // Include the ID so users pasting one can still find it.
-                  value={`${c.name} ${c.id}`}
-                  onSelect={() => {
-                    onChange(c.id);
-                    setOpen(false);
-                  }}
-                >
-                  {c.isPrivate ? (
-                    <Lock className="h-3.5 w-3.5 text-muted-foreground" />
-                  ) : (
-                    <Hash className="h-3.5 w-3.5 text-muted-foreground" />
-                  )}
-                  <span>{c.name}</span>
-                  {!c.isMember && (
-                    <span className="ml-auto text-xxs text-amber-600 dark:text-amber-400">
-                      bot not in channel
-                    </span>
-                  )}
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          )}
+                {directory.channels.length > 0 && (
+                  <CommandGroup heading="Channels">
+                    {directory.channels.map((c) => (
+                      <CommandItem
+                        key={c.id}
+                        value={`${c.name} ${c.id}`}
+                        onSelect={() => {
+                          onChange(c.id);
+                          setOpen(false);
+                        }}
+                      >
+                        {c.isPrivate ? (
+                          <Lock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        ) : (
+                          <Hash className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        )}
+                        <span className="flex-1 min-w-0 truncate">{c.name}</span>
+                        {!c.isMember && (
+                          <span className="shrink-0 whitespace-nowrap text-xxs text-amber-600 dark:text-amber-400">
+                            bot not joined
+                          </span>
+                        )}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                )}
 
-          {directory.users.length > 0 && (
-            <CommandGroup heading="People (DM)">
-              {directory.users.map((u) => (
-                <CommandItem
-                  key={u.id}
-                  value={`${u.displayName} ${u.name} ${u.id}`}
-                  onSelect={() => {
-                    onChange(u.id);
-                    setOpen(false);
-                  }}
-                >
-                  {u.avatar ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={u.avatar}
-                      alt=""
-                      className="h-4 w-4 rounded-sm"
-                    />
-                  ) : (
-                    <User className="h-3.5 w-3.5 text-muted-foreground" />
-                  )}
-                  <span>{u.displayName}</span>
-                  <span className="ml-auto text-xxs text-muted-foreground">
-                    @{u.name}
-                  </span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          )}
-        </CommandList>
-      </CommandDialog>
-    </>
+                {directory.users.length > 0 && (
+                  <CommandGroup heading="People (DM)">
+                    {directory.users.map((u) => (
+                      <CommandItem
+                        key={u.id}
+                        value={`${u.displayName} ${u.name} ${u.id}`}
+                        onSelect={() => {
+                          onChange(u.id);
+                          setOpen(false);
+                        }}
+                      >
+                        {u.avatar ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={u.avatar}
+                            alt=""
+                            className="h-4 w-4 rounded-sm shrink-0"
+                          />
+                        ) : (
+                          <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        )}
+                        <span className="flex-1 min-w-0 truncate">{u.displayName}</span>
+                        <span className="shrink-0 whitespace-nowrap text-xxs text-muted-foreground">
+                          @{u.name}
+                        </span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                )}
+              </CommandList>
+            </Command>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
