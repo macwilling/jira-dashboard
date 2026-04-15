@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRelease, purgeRelease } from "@/lib/releases/store";
-import { listTaskInstances } from "@/lib/releases/templates-store";
+import { listTaskInstances } from "@/lib/releases/task-instances-store";
 import {
   deleteGoogleTask,
   deleteCalendarEvent,

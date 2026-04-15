@@ -3,8 +3,8 @@ import {
   getTaskDefinition,
   updateTaskDefinition,
   deleteTaskDefinition,
-  countTemplateTasksUsingDefinition,
-} from "@/lib/releases/templates-store";
+} from "@/lib/releases/task-definitions-store";
+import { countWorkflowTasksUsingDefinition as countTemplateTasksUsingDefinition } from "@/lib/releases/workflows-store";
 import type {
   ActionType,
   ConfigurableField,

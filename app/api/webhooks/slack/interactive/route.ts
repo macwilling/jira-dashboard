@@ -8,7 +8,7 @@ import {
 } from "@/lib/releases/store";
 import {
   listTaskInstances,
-} from "@/lib/releases/templates-store";
+} from "@/lib/releases/task-instances-store";
 import { autoDispatchPendingInstances } from "@/lib/releases/dispatcher";
 import {
   APPROVE_ACTION_ID,

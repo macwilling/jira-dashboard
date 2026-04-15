@@ -1,17 +1,22 @@
 /**
- * Event-driven notification firing for release templates.
+ * Event-driven notification firing for release workflows.
  *
  * Runs synchronously in response to a lifecycle event: release created, date
- * changed, released, or task dispatch failure. Each fire is best-effort — we
- * swallow errors so a flaky Slack call can't crash the caller's flow.
+ * changed, released, or task dispatch failure. Each fire is best-effort —
+ * errors are swallowed so a flaky Slack call can't crash the caller's flow.
+ *
+ * Notification rules live on the workflow that owns the release (via
+ * release.category_id → category.workflow_id). Unmatched releases have no
+ * workflow and therefore fire nothing — that's intentional, the admin alert
+ * path handles those cases separately.
  *
  * Posts via Slack `chat.postMessage` with a bot token (SLACK_BOT_TOKEN env).
  * A rule's `target` is a channel ID (C…, G…) or user ID (U…) for a DM.
  */
 
-import { listTemplates } from "./templates-store";
-import { listNotificationsForEvent } from "./notifications-store";
-import { matchTemplates } from "./matcher";
+import { getCategory } from "./categories";
+import { listNotificationsForEvent } from "./workflows-store";
+import { getRelease } from "./store";
 import {
   buildMergeContext,
   renderMergeFields,
@@ -22,7 +27,10 @@ import { buildSlackMessage } from "./notification-blocks";
 import type { Release, ReleaseEventType } from "./types";
 
 export interface FireEventOptions {
-  release: Pick<Release, "id" | "name" | "description" | "releaseDate">;
+  release: Pick<
+    Release,
+    "id" | "name" | "description" | "releaseDate" | "categoryId"
+  >;
   eventType: ReleaseEventType;
   /** Event-specific context (old/new date, task label, error). */
   event?: EventContextOverride;
@@ -34,12 +42,18 @@ function isValidTarget(target: string): boolean {
 }
 
 /**
- * Match the release against a template, look up notification rules for the
- * given event, and post each via chat.postMessage.
- *
- * Never throws — per-rule failures log to console so the calling webhook/handler
- * flow proceeds uninterrupted.
+ * Resolve the workflow for a release by chasing
+ * release → category → workflow. Callers that already have the workflowId can
+ * skip this by calling listNotificationsForEvent directly.
  */
+async function resolveWorkflowId(
+  release: Pick<Release, "id" | "categoryId">,
+): Promise<string | null> {
+  if (!release.categoryId) return null;
+  const cat = await getCategory(release.categoryId).catch(() => null);
+  return cat?.workflowId ?? null;
+}
+
 export async function fireReleaseEvent(opts: FireEventOptions): Promise<void> {
   const { release, eventType, event } = opts;
 
@@ -51,18 +65,19 @@ export async function fireReleaseEvent(opts: FireEventOptions): Promise<void> {
       return;
     }
 
-    const templates = await listTemplates();
-    const matched = matchTemplates(release.name, templates);
-    if (matched.length === 0) return;
+    // If the caller passed a minimal release shape without categoryId, fetch.
+    let categoryId = release.categoryId;
+    if (categoryId === undefined) {
+      const full = await getRelease(release.id).catch(() => null);
+      categoryId = full?.categoryId ?? null;
+    }
 
-    // Layered templates: gather rules from every matched template. Each rule
-    // fires independently — a release that matches both "Base" and "Mobile"
-    // layers will get notifications from both if they both have rules for
-    // this event type.
-    const ruleLists = await Promise.all(
-      matched.map((t) => listNotificationsForEvent(t.id, eventType)),
-    );
-    const rules = ruleLists.flat();
+    const workflowId = categoryId
+      ? await resolveWorkflowId({ id: release.id, categoryId })
+      : null;
+    if (!workflowId) return; // unmatched / no workflow → no notifications
+
+    const rules = await listNotificationsForEvent(workflowId, eventType);
     if (rules.length === 0) return;
 
     const ctx = buildMergeContext(release, null, 0, event);

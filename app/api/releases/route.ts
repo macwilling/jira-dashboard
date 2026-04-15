@@ -1,29 +1,41 @@
 import { NextResponse } from "next/server";
 import { listReleases } from "@/lib/releases/store";
-import { listTemplates, listTaskInstances } from "@/lib/releases/templates-store";
-import { matchTemplates } from "@/lib/releases/matcher";
+import { listTaskInstances } from "@/lib/releases/task-instances-store";
+import { listCategories } from "@/lib/releases/categories";
+import { listWorkflows } from "@/lib/releases/workflows-store";
 import { summarizeSyncStates } from "@/lib/releases/sync-state";
 
-// Hits Cloudflare D1 at request time — never prerender.
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const [releases, templates] = await Promise.all([
+    const [releases, categories, workflows] = await Promise.all([
       listReleases(),
-      listTemplates(),
+      listCategories(),
+      listWorkflows(),
     ]);
+
+    const categoriesById = new Map(categories.map((c) => [c.id, c]));
+    const workflowsById = new Map(workflows.map((w) => [w.id, w]));
 
     const result = await Promise.all(
       releases.map(async (release) => {
-        const matched = matchTemplates(release.name, templates);
+        const category = release.categoryId
+          ? categoriesById.get(release.categoryId) ?? null
+          : null;
+        const workflow = category?.workflowId
+          ? workflowsById.get(category.workflowId) ?? null
+          : null;
         const instances = await listTaskInstances(release.id);
         return {
           ...release,
-          matchedTemplates: matched.map((t) => ({ id: t.id, name: t.name })),
+          category: category
+            ? { id: category.id, key: category.key }
+            : null,
+          workflow: workflow ? { id: workflow.id, name: workflow.name } : null,
           syncSummary: summarizeSyncStates(instances),
         };
-      })
+      }),
     );
 
     return NextResponse.json({ releases: result });
