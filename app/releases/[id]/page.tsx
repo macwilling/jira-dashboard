@@ -42,7 +42,8 @@ import { parseReleaseName } from "@/lib/releases/matcher";
 import { cn } from "@/lib/utils";
 import type {
   Release,
-  ReleaseTemplate,
+  ReleaseCategory,
+  Workflow,
   ReleaseTaskInstance,
   ActionType,
 } from "@/lib/releases/types";
@@ -188,7 +189,8 @@ export default function ReleasePage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [release, setRelease] = useState<Release | null>(null);
-  const [matchedTemplates, setMatchedTemplates] = useState<ReleaseTemplate[]>([]);
+  const [category, setCategory] = useState<ReleaseCategory | null>(null);
+  const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [expectedTaskCount, setExpectedTaskCount] = useState(0);
   const [instances, setInstances] = useState<InstanceWithState[]>([]);
   const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null);
@@ -210,7 +212,8 @@ export default function ReleasePage() {
       .then((r) => r.json())
       .then((data) => {
         setRelease(data.release);
-        setMatchedTemplates(data.matchedTemplates ?? []);
+        setCategory(data.category ?? null);
+        setWorkflow(data.workflow ?? null);
         setExpectedTaskCount(data.expectedTaskCount ?? 0);
         setInstances(data.taskInstances ?? []);
         setSyncSummary(data.syncSummary ?? null);
@@ -454,7 +457,7 @@ export default function ReleasePage() {
           </TooltipContent>
         </Tooltip>
       )}
-      {matchedTemplates.length > 0 && !release.deletedAt && (
+      {workflow && !release.deletedAt && (
         <Tooltip>
           <TooltipTrigger
             render={
@@ -471,7 +474,7 @@ export default function ReleasePage() {
             Rebuild
           </TooltipTrigger>
           <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
-            Rebuilds the checklist from the current template. Rows already
+            Rebuilds the checklist from the current workflow. Rows already
             created in Google are kept; undispatched rows are replaced.
           </TooltipContent>
         </Tooltip>
@@ -619,27 +622,38 @@ export default function ReleasePage() {
             )}
             <div className="flex items-center gap-2 text-sm">
               <Package className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              {matchedTemplates.length === 0 ? (
+              {!release.categoryId ? (
                 <span className="text-muted-foreground">
-                  No template matched —{" "}
-                  <Link href="/releases/templates" className="hover:underline text-foreground">
-                    manage templates
+                  No category matched —{" "}
+                  <Link href="/releases/categories" className="hover:underline text-foreground">
+                    manage categories
+                  </Link>
+                </span>
+              ) : !workflow ? (
+                <span className="text-muted-foreground">
+                  Category{" "}
+                  <span className="text-foreground font-medium">
+                    {category?.key ?? release.categoryId}
+                  </span>{" "}
+                  has no workflow —{" "}
+                  <Link href="/releases/categories" className="hover:underline text-foreground">
+                    assign one
                   </Link>
                 </span>
               ) : (
                 <span className="text-muted-foreground">
-                  Template{matchedTemplates.length > 1 ? "s" : ""}:{" "}
-                  {matchedTemplates.map((t, i) => (
-                    <span key={t.id}>
-                      {i > 0 && <span className="mx-1">+</span>}
-                      <Link
-                        href={`/releases/templates/${t.id}`}
-                        className="text-foreground font-medium hover:underline"
-                      >
-                        {t.name}
-                      </Link>
+                  Workflow:{" "}
+                  <Link
+                    href={`/releases/workflows/${workflow.id}`}
+                    className="text-foreground font-medium hover:underline"
+                  >
+                    {workflow.name}
+                  </Link>
+                  {category && (
+                    <span className="ml-2 text-xs text-muted-foreground/80">
+                      ({category.key})
                     </span>
-                  ))}
+                  )}
                 </span>
               )}
             </div>
@@ -680,7 +694,7 @@ export default function ReleasePage() {
               </section>
             ))}
           </div>
-        ) : matchedTemplates.length > 0 ? (
+        ) : workflow ? (
           <div className="rounded-lg border border-dashed p-8 text-center space-y-3">
             <p className="text-sm text-muted-foreground">No tasks generated yet.</p>
             <Button
@@ -690,17 +704,32 @@ export default function ReleasePage() {
               onClick={() => setRegenOpen(true)}
               disabled={regenerating}
             >
-              Generate from template
+              Generate from workflow
             </Button>
+          </div>
+        ) : !release.categoryId ? (
+          <div className="rounded-lg border border-dashed p-8 text-center space-y-3">
+            <p className="text-sm text-muted-foreground">
+              No tasks — this release didn&apos;t match any category.
+            </p>
+            <Link href="/releases/categories">
+              <Button variant="outline" size="sm" className="h-7 text-xs">
+                Manage categories
+              </Button>
+            </Link>
           </div>
         ) : (
           <div className="rounded-lg border border-dashed p-8 text-center space-y-3">
             <p className="text-sm text-muted-foreground">
-              No tasks — create a template that matches this release.
+              No tasks — category{" "}
+              <span className="font-medium text-foreground">
+                {category?.key ?? release.categoryId}
+              </span>{" "}
+              has no workflow assigned.
             </p>
-            <Link href="/releases/templates">
+            <Link href="/releases/categories">
               <Button variant="outline" size="sm" className="h-7 text-xs">
-                Manage templates
+                Assign workflow
               </Button>
             </Link>
           </div>
@@ -713,25 +742,12 @@ export default function ReleasePage() {
           <DialogHeader>
             <DialogTitle>Rebuild checklist?</DialogTitle>
             <DialogDescription>
-              Rebuilds this release&apos;s checklist from{" "}
-              {matchedTemplates.length === 1 ? (
-                <>
-                  the{" "}
-                  <span className="font-medium text-foreground">
-                    {matchedTemplates[0].name}
-                  </span>{" "}
-                  template
-                </>
-              ) : (
-                <>
-                  <span className="font-medium text-foreground">
-                    {matchedTemplates.length} matching templates
-                  </span>{" "}
-                  ({matchedTemplates.map((t) => t.name).join(" + ")})
-                </>
-              )}
-              . Useful after a template changes, or to reset rows that got into
-              a bad state.
+              Rebuilds this release&apos;s checklist from the{" "}
+              <span className="font-medium text-foreground">
+                {workflow?.name ?? "assigned"}
+              </span>{" "}
+              workflow. Useful after a workflow changes, or to reset rows that
+              got into a bad state.
             </DialogDescription>
           </DialogHeader>
 
@@ -757,7 +773,7 @@ export default function ReleasePage() {
                 <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-600 shrink-0" />
                 <div>
                   <span className="font-medium tabular-nums">{expectedTaskCount}</span>{" "}
-                  fresh row{expectedTaskCount === 1 ? "" : "s"} from template{" "}
+                  fresh row{expectedTaskCount === 1 ? "" : "s"} from workflow{" "}
                   <span className="text-muted-foreground">
                     — created and dispatched to Google automatically
                   </span>

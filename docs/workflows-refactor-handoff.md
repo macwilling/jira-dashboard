@@ -2,7 +2,9 @@
 
 Branch: `workflows-refactor`
 
-Status as of this commit: **server pipeline rebuilt, UI layer partially broken — does not compile.** The new model is wired end-to-end on the server (types → store → orchestrator → webhook), but a handful of UI files still reference the old template types. Next session picks up at Phase 6.
+Status as of this commit: **build green; pickup at Phase 6.** Server pipeline is rebuilt (types → store → orchestrator → webhook) and the UI compiles against the new workflow/category model. Resolution/unmatched banners and the workflows+categories admin UIs are still to be built.
+
+**Start here next session**: Phase 6 (workflows + categories admin UI). See "Next-session pickup" below.
 
 ## What's done
 
@@ -25,20 +27,19 @@ Status as of this commit: **server pipeline rebuilt, UI layer partially broken �
 - **Phase 4** — `app/api/webhooks/jira/version/route.ts` is now a thin auth + parse + delegate handler.
 - **Post-work** — every API route under `app/api/releases/**` had its imports updated. `app/api/releases/templates/**` deleted. `app/api/releases/route.ts`, `app/api/releases/[id]/route.ts`, `app/api/releases/[id]/tasks/route.ts`, `app/api/releases/[id]/tasks/[taskId]/dispatch/route.ts`, `app/api/releases/[id]/tasks/[taskId]/push-to-google/route.ts` rewritten to use the workflow model.
 - **UI** — `app/releases/templates/**` deleted (will be replaced by `/releases/workflows` and `/releases/categories`).
+- **Build-green pass (this commit)** — `app/releases/[id]/page.tsx` and `app/releases/page.tsx` patched to consume the new API shape (`{ release, category, workflow, expectedTaskCount, taskInstances, syncSummary }` for detail; `workflow` + `category` embedded on each release in the list). `matchedTemplates` state replaced with `category` + `workflow`. Template chip/empty-states now distinguish three UI cases: no category matched, category matched but no workflow assigned, or both present. Also fixed two ride-along blockers: unused `previousDate` in `lib/releases/orchestrator.ts:101` and stale `releaseApprovalSlackTarget` → `releaseAdminSlackTarget` references in `app/api/config/route.ts` and `app/settings/page.tsx`. **Settings UI label still says "Release Approval"** — the backing field is now admin-alerts only (approval is per-workflow). Label change deferred to Phase 9.
 
-## What's still broken (blocks compile)
+## What's still missing
 
-1. **`app/releases/[id]/page.tsx`** (~959 lines) — still imports `ReleaseTemplate` and reads `data.matchedTemplates` from the API. The new `/api/releases/[id]` returns `{ release, category, workflow, expectedTaskCount, taskInstances, syncSummary }` instead. The page needs:
-   - Replace `matchedTemplates` state with `workflow` state (or just `category` + `workflow`).
-   - Update the "Template(s):" chip area to show the single workflow (or "Unmatched — no category matched" banner when `release.categoryId` is null).
-   - Update the regenerate-dialog copy for the single-workflow case.
-   - **Phase 7 additions**: unmatched banner; resolution banner (three cards) when `release.resolutionRequired`.
+1. **Workflows + Categories admin UI** — Phase 6. Doesn't exist yet. `/releases/workflows` (list + editor) and `/releases/categories` (assignment table) need to be built, along with their API routes. See Phase 6 in "Next-session pickup" below. The old "Templates" link in `components/app-shell/AppNav.tsx` still points at `/releases/templates` which returns 404 — leave until the new pages land, then replace.
 
-2. **`app/releases/page.tsx`** (~728 lines) — may reference old template data from `/api/releases`. The new endpoint returns `category` and `workflow` objects per release. Should compile but UI strings need updating ("2 templates" → "workflow: Foo" etc.).
+2. **Release detail — unmatched + resolution banners** — Phase 7. The detail page now *degrades gracefully* when `release.categoryId` is null (shows "No category matched") or when the category has no workflow ("Category X has no workflow — assign one"), but there's no prominent banner for the `resolutionRequired` freeze state. The detail page just continues to render task rows even though the orchestrator has short-circuited generation. Needs explicit banner + three resolution cards per the snapshot.
 
-3. **`app/releases/task-library/**`** — task library UI. The `TaskDefinition` type and API haven't changed, but double-check any imports pointing at `@/lib/releases/templates-store` (there shouldn't be any after the earlier sweep, but worth a `grep`).
+3. **Resolve endpoint + Slack interactive wiring** — Phase 8. `app/api/releases/[id]/resolve/route.ts` does not exist; Slack interactive handler does not yet wire the resolution action IDs from `admin-notifier.ts`.
 
-4. **Workflows + Categories UI** (doesn't exist yet) — Phase 6.
+4. **Cloudflare cron recovery** — Phase 5. Not started.
+
+5. **Admin-target relabel + polish** — Phase 9. Settings UI still says "Release Approval" over a field that's now `releaseAdminSlackTarget` (used for admin-notifier alerts only). Relabel + copy refresh pending.
 
 ## The migration
 
@@ -48,15 +49,11 @@ User was going to apply this in the Cloudflare D1 console while I coded. **Verif
 
 ## Next-session pickup
 
+**Start here**: Phase 6. Everything before it is done.
+
 Suggested order (each can be a separate commit):
 
-### 1. Get the build green again
-
-- Fix `app/releases/[id]/page.tsx` — swap `matchedTemplates` for `workflow`, add unmatched banner. Keep it minimal; full Phase 7 work can be a separate commit.
-- Fix `app/releases/page.tsx` — adjust UI strings to reference workflow/category instead of templates.
-- `npm run build` should succeed; `npm run lint` should be clean (or at least not-worse than main).
-
-### 2. Phase 6 — workflows + categories UI
+### 1. Phase 6 — workflows + categories UI
 
 - New `app/releases/workflows/page.tsx` (list + create) and `app/releases/workflows/[id]/page.tsx` (editor: name, approval Slack target, task list, notification rules).
   - Reuse `components/releases/MergeFieldPicker.tsx` and `SlackTargetPicker.tsx`.
@@ -66,12 +63,12 @@ Suggested order (each can be a separate commit):
 - API: `app/api/releases/workflows/route.ts` (GET list, POST create), `app/api/releases/workflows/[id]/route.ts` (GET/PUT/DELETE + tasks + notifications — can pattern-match the old templates route that was deleted), `app/api/releases/categories/route.ts` (GET list, PATCH assignment).
 - Update navigation: `components/app-shell/AppShell.tsx` — replace "Templates" link with "Workflows" and "Categories" (or nest under a "Releases" section).
 
-### 3. Phase 7 — release detail banners
+### 2. Phase 7 — release detail banners
 
 - Unmatched banner on `/releases/[id]` when `release.categoryId === null`, explaining that the name didn't parse and linking to the categories page.
 - Resolution banner when `release.resolutionRequired === true` — replace task table with three cards (Keep original / Switch to new / Discard), populated from `release.resolutionSnapshot`. Each card has a confirmation-on-click button.
 
-### 4. Phase 8 — category-change resolution flow
+### 3. Phase 8 — category-change resolution flow
 
 - `app/api/releases/[id]/resolve/route.ts` — POST with body `{ action: "keep_original" | "switch_workflow" | "discard" }`.
   - `keep_original` — clear `resolutionRequired`, leave category pointing at the old one (set via snapshot), write audit event.
@@ -80,12 +77,12 @@ Suggested order (each can be a separate commit):
 - Wire Slack interactive handler: `app/api/webhooks/slack/interactive/route.ts` — add action IDs from `admin-notifier.ts` (`RESOLUTION_KEEP_ORIGINAL_ACTION` etc.). Each action does the same work as the POST endpoint + updates the original Slack message in place with the outcome ("Switched to X by @user"). Ephemeral confirmation already built into the Slack blocks.
 - Test: rename a release mid-dispatch in Jira and verify Slack message appears and each button path works.
 
-### 5. Phase 5 — Cloudflare cron recovery
+### 4. Phase 5 — Cloudflare cron recovery
 
 - Cloudflare Worker (separate from Next.js app) with `[triggers] crons = ["*/5 * * * *"]`. Polls Jira for active versions in the project, diffs against D1, and POSTs to `/api/webhooks/jira/version` for drift. Free on Cloudflare's free tier.
 - Alternative: Vercel cron calling the same handler. Only works on Pro plan with sub-daily frequency.
 
-### 6. Phase 9 — polish
+### 5. Phase 9 — polish
 
 - Unified `/api/releases/[id]/actions` endpoint (collapse approve/cancel/refresh/purge/resolve).
 - Approval Slack message shows task preview (`lib/releases/approval-message.ts`).

@@ -47,10 +47,10 @@ export async function POST(request: NextRequest) {
       ...(body.boardId ? { boardId: body.boardId } : {}),
       ...(body.standupTime ? { standupTime: body.standupTime } : {}),
       ...(body.standupTimezone ? { standupTimezone: body.standupTimezone } : {}),
-      // Explicitly pass through empty string as "clear the gate" — we want the
-      // user to be able to turn the gate off by clearing the field.
-      ...(body.releaseApprovalSlackTarget !== undefined
-        ? { releaseApprovalSlackTarget: body.releaseApprovalSlackTarget || undefined }
+      // Explicitly pass through empty string as "clear" — we want the user to
+      // be able to turn the admin alert target off by clearing the field.
+      ...(body.releaseAdminSlackTarget !== undefined
+        ? { releaseAdminSlackTarget: body.releaseAdminSlackTarget || undefined }
         : {}),
     });
 

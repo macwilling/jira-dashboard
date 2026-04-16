@@ -98,7 +98,6 @@ export async function handleVersionEvent(
   const isNew = !previous;
   if (isNew) await recordEvent(id, "release.ingested", { webhookEvent });
 
-  const previousDate = previous?.releaseDate ?? null;
   const newDate = release.releaseDate;
   const dateChanged =
     !!previous && previous.releaseDate !== release.releaseDate;

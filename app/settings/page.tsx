@@ -20,7 +20,7 @@ interface ConfigStatus {
     boardId?: string;
     standupTime?: string;
     standupTimezone?: string;
-    releaseApprovalSlackTarget?: string;
+    releaseAdminSlackTarget?: string;
   } | null;
 }
 
@@ -102,7 +102,7 @@ export default function SettingsPage() {
           setBoardId(data.config.boardId || "");
           setStandupTime(data.config.standupTime || "09:00");
           setStandupTimezone(data.config.standupTimezone || "");
-          setReleaseApprovalTarget(data.config.releaseApprovalSlackTarget || "");
+          setReleaseApprovalTarget(data.config.releaseAdminSlackTarget || "");
         }
       })
       .catch(() => {})
@@ -129,8 +129,8 @@ export default function SettingsPage() {
           ...(standupTime ? { standupTime } : {}),
           ...(standupTimezone.trim() ? { standupTimezone: standupTimezone.trim() } : {}),
           ...(releaseApprovalTarget.trim()
-            ? { releaseApprovalSlackTarget: releaseApprovalTarget.trim() }
-            : { releaseApprovalSlackTarget: "" }),
+            ? { releaseAdminSlackTarget: releaseApprovalTarget.trim() }
+            : { releaseAdminSlackTarget: "" }),
         }),
       });
       if (res.ok) setSaved(true);
