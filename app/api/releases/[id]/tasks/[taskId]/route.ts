@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { updateTaskInstanceStatus } from "@/lib/releases/templates-store";
+import { updateTaskInstanceStatus } from "@/lib/releases/task-instances-store";
 import type { TaskInstanceStatus } from "@/lib/releases/types";
 
 const VALID_STATUSES = new Set<TaskInstanceStatus>(["pending", "done", "skipped"]);

@@ -20,7 +20,7 @@ import {
   clearTaskInstanceExternalRef,
   setTaskInstanceDueDate,
   updateTaskInstanceStatus,
-} from "./templates-store";
+} from "./task-instances-store";
 import {
   createGoogleTask,
   createCalendarEvent,

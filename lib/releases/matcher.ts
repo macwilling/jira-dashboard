@@ -1,6 +1,6 @@
-import type { ReleaseTemplate, ReleaseType } from "./types";
+import type { ReleaseType } from "./types";
 
-interface ParsedReleaseName {
+export interface ParsedReleaseName {
   platform: string | null;
   releaseType: ReleaseType | null;
 }
@@ -42,46 +42,12 @@ export function parseReleaseName(name: string): ParsedReleaseName {
 }
 
 /**
- * Returns ALL templates that match a release name, ordered by `priority` ASC
- * (same ordering as the input). Templates layer: every matching template
- * contributes its tasks to the release.
- *
- * Match rule per template: OR within each list, AND across the two.
- * `null` or empty list = wildcard. So a template with
- *   platformPrefixes: ["web", "android"], releaseTypes: ["minor"]
- * matches web or android minor releases only.
- *
- * A release with no matches produces no tasks — that's intentional. The release
- * manager should see "unmatched" as a signal the version name is wrong in Jira.
- */
-export function matchTemplates(
-  releaseName: string,
-  templates: ReleaseTemplate[],
-): ReleaseTemplate[] {
-  const { platform, releaseType } = parseReleaseName(releaseName);
-
-  return templates.filter((tmpl) => {
-    const platformMatch =
-      !tmpl.platformPrefixes ||
-      tmpl.platformPrefixes.length === 0 ||
-      (platform !== null && tmpl.platformPrefixes.includes(platform));
-
-    const typeMatch =
-      !tmpl.releaseTypes ||
-      tmpl.releaseTypes.length === 0 ||
-      (releaseType !== null && tmpl.releaseTypes.includes(releaseType));
-
-    return platformMatch && typeMatch;
-  });
-}
-
-/**
  * Adds `dayOffset` calendar days to a date string.
  * Accepts YYYY-MM-DD or full ISO timestamps — only the date part is used.
  * Returns a YYYY-MM-DD string.
  */
 export function addDays(isoDate: string, dayOffset: number): string {
-  const datePart = isoDate.slice(0, 10); // handles both "2025-04-20" and "2025-04-20T00:00:00Z"
+  const datePart = isoDate.slice(0, 10);
   const d = new Date(datePart + "T00:00:00Z");
   if (isNaN(d.getTime())) {
     throw new Error(`Invalid release date: "${isoDate}"`);

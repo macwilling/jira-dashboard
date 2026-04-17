@@ -1,41 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRelease } from "@/lib/releases/store";
+import { getCategory } from "@/lib/releases/categories";
 import {
-  listTemplates,
-  listTaskInstances,
-  listTemplateTasks,
-} from "@/lib/releases/templates-store";
-import { matchTemplates } from "@/lib/releases/matcher";
-import { computeSyncState, summarizeSyncStates } from "@/lib/releases/sync-state";
+  getWorkflow,
+  listWorkflowTasks,
+} from "@/lib/releases/workflows-store";
+import { listTaskInstances } from "@/lib/releases/task-instances-store";
+import {
+  computeSyncState,
+  summarizeSyncStates,
+} from "@/lib/releases/sync-state";
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
   try {
-    const [release, templates] = await Promise.all([
-      getRelease(id),
-      listTemplates(),
-    ]);
-
+    const release = await getRelease(id);
     if (!release) {
       return NextResponse.json({ error: "not found" }, { status: 404 });
     }
 
-    const matched = matchTemplates(release.name, templates);
-    const [instances, taskCounts] = await Promise.all([
-      listTaskInstances(id),
-      Promise.all(matched.map((t) => listTemplateTasks(t.id).then((r) => r.length))),
-    ]);
-    const expectedTaskCount = taskCounts.reduce((s, n) => s + n, 0);
+    const category = release.categoryId
+      ? await getCategory(release.categoryId)
+      : null;
+    const workflow = category?.workflowId
+      ? await getWorkflow(category.workflowId)
+      : null;
 
-    const withState = instances.map((i) => ({ ...i, syncState: computeSyncState(i) }));
+    const [instances, workflowTasks] = await Promise.all([
+      listTaskInstances(id),
+      workflow ? listWorkflowTasks(workflow.id) : Promise.resolve([]),
+    ]);
+
+    const withState = instances.map((i) => ({
+      ...i,
+      syncState: computeSyncState(i),
+    }));
 
     return NextResponse.json({
       release,
-      matchedTemplates: matched,
-      expectedTaskCount,
+      category,
+      workflow,
+      expectedTaskCount: workflowTasks.length,
       taskInstances: withState,
       syncSummary: summarizeSyncStates(instances),
     });

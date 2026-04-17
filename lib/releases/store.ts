@@ -1,5 +1,11 @@
 import { d1Query } from "@/lib/d1/client";
-import type { ApprovalStatus, JiraVersionPayload, Release } from "./types";
+import type {
+  ApprovalStatus,
+  JiraVersionPayload,
+  Release,
+  ResolutionReason,
+  ResolutionSnapshot,
+} from "./types";
 
 interface ReleaseRow {
   id: string;
@@ -14,12 +20,25 @@ interface ReleaseRow {
   jira_raw: string;
   received_at: string;
   updated_at: string;
+  category_id: string | null;
+  resolution_required: number;
+  resolution_reason: string | null;
+  resolution_snapshot: string | null;
   approval_status: string | null;
   approval_version: number | null;
   approval_message_ts: string | null;
   approval_message_channel: string | null;
   approved_at: string | null;
   approved_by: string | null;
+}
+
+function parseSnapshot(raw: string | null): ResolutionSnapshot | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as ResolutionSnapshot;
+  } catch {
+    return null;
+  }
 }
 
 function rowToRelease(row: ReleaseRow): Release {
@@ -29,7 +48,6 @@ function rowToRelease(row: ReleaseRow): Release {
   } catch {
     jiraRaw = row.jira_raw;
   }
-  const status = (row.approval_status ?? "none") as ApprovalStatus;
   return {
     id: row.id,
     projectId: row.project_id,
@@ -43,7 +61,13 @@ function rowToRelease(row: ReleaseRow): Release {
     jiraRaw,
     receivedAt: row.received_at,
     updatedAt: row.updated_at,
-    approvalStatus: status,
+
+    categoryId: row.category_id,
+    resolutionRequired: row.resolution_required === 1,
+    resolutionReason: (row.resolution_reason as ResolutionReason | null) ?? null,
+    resolutionSnapshot: parseSnapshot(row.resolution_snapshot),
+
+    approvalStatus: (row.approval_status ?? "none") as ApprovalStatus,
     approvalVersion: row.approval_version ?? 0,
     approvalMessageTs: row.approval_message_ts,
     approvalMessageChannel: row.approval_message_channel,
@@ -52,11 +76,8 @@ function rowToRelease(row: ReleaseRow): Release {
   };
 }
 
-/**
- * Record that an approval request was posted to Slack. Called after the
- * webhook successfully posts the message — ties this release to that message
- * so later clicks can be routed back here.
- */
+// ─── Approval state transitions ───────────────────────────────────────────────
+
 export async function setApprovalPending(
   id: string,
   params: { version: number; messageTs: string; channel: string },
@@ -64,26 +85,24 @@ export async function setApprovalPending(
   const now = new Date().toISOString();
   await d1Query(
     `UPDATE releases
-       SET approval_status = 'pending',
-           approval_version = ?,
-           approval_message_ts = ?,
-           approval_message_channel = ?,
-           updated_at = ?
-     WHERE id = ?`,
+        SET approval_status = 'pending',
+            approval_version = ?,
+            approval_message_ts = ?,
+            approval_message_channel = ?,
+            updated_at = ?
+      WHERE id = ?`,
     [params.version, params.messageTs, params.channel, now, id],
   );
 }
 
-/** Increments the approval_version counter. Use when superseding a stale
- *  pending message (release updated in Jira while waiting for approval). */
 export async function bumpApprovalVersion(id: string): Promise<number> {
   const now = new Date().toISOString();
   const { results } = await d1Query<{ approval_version: number | null }>(
     `UPDATE releases
-       SET approval_version = COALESCE(approval_version, 0) + 1,
-           updated_at = ?
-     WHERE id = ?
-     RETURNING approval_version`,
+        SET approval_version = COALESCE(approval_version, 0) + 1,
+            updated_at = ?
+      WHERE id = ?
+      RETURNING approval_version`,
     [now, id],
   );
   return results[0]?.approval_version ?? 1;
@@ -96,11 +115,11 @@ export async function setApprovalApproved(
   const now = new Date().toISOString();
   await d1Query(
     `UPDATE releases
-       SET approval_status = 'approved',
-           approved_at = ?,
-           approved_by = ?,
-           updated_at = ?
-     WHERE id = ?`,
+        SET approval_status = 'approved',
+            approved_at = ?,
+            approved_by = ?,
+            updated_at = ?
+      WHERE id = ?`,
     [now, approvedBy, now, id],
   );
 }
@@ -109,9 +128,9 @@ export async function setApprovalCancelled(id: string): Promise<void> {
   const now = new Date().toISOString();
   await d1Query(
     `UPDATE releases
-       SET approval_status = 'cancelled',
-           updated_at = ?
-     WHERE id = ?`,
+        SET approval_status = 'cancelled',
+            updated_at = ?
+      WHERE id = ?`,
     [now, id],
   );
 }
@@ -120,40 +139,86 @@ export async function clearApproval(id: string): Promise<void> {
   const now = new Date().toISOString();
   await d1Query(
     `UPDATE releases
-       SET approval_status = 'none',
-           approval_message_ts = NULL,
-           approval_message_channel = NULL,
-           updated_at = ?
-     WHERE id = ?`,
+        SET approval_status = 'none',
+            approval_message_ts = NULL,
+            approval_message_channel = NULL,
+            updated_at = ?
+      WHERE id = ?`,
     [now, id],
   );
 }
 
+// ─── Category + resolution state ──────────────────────────────────────────────
+
+export async function setReleaseCategory(
+  id: string,
+  categoryId: string | null,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases SET category_id = ?, updated_at = ? WHERE id = ?`,
+    [categoryId, now, id],
+  );
+}
+
+export async function setResolutionRequired(
+  id: string,
+  reason: ResolutionReason,
+  snapshot: ResolutionSnapshot,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases
+        SET resolution_required = 1,
+            resolution_reason = ?,
+            resolution_snapshot = ?,
+            updated_at = ?
+      WHERE id = ?`,
+    [reason, JSON.stringify(snapshot), now, id],
+  );
+}
+
+export async function clearResolution(id: string): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases
+        SET resolution_required = 0,
+            resolution_reason = NULL,
+            resolution_snapshot = NULL,
+            updated_at = ?
+      WHERE id = ?`,
+    [now, id],
+  );
+}
+
+// ─── Upsert + lifecycle ───────────────────────────────────────────────────────
+
 /**
- * Insert or update a release based on a Jira version webhook payload.
- * The full payload is preserved in `jira_raw` for later reference.
+ * Insert or update a release from a Jira webhook payload. Does NOT touch the
+ * category or resolution state — the orchestrator owns those. On insert,
+ * category_id defaults to NULL (unmatched) until the orchestrator resolves it.
  */
 export async function upsertRelease(
   version: JiraVersionPayload,
-  rawPayload: unknown
+  rawPayload: unknown,
 ): Promise<void> {
   const now = new Date().toISOString();
 
   await d1Query(
     `INSERT INTO releases (
-      id, project_id, name, description, release_date, start_date,
-      released, archived, jira_raw, received_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      project_id   = excluded.project_id,
-      name         = excluded.name,
-      description  = excluded.description,
-      release_date = excluded.release_date,
-      start_date   = excluded.start_date,
-      released     = excluded.released,
-      archived     = excluded.archived,
-      jira_raw     = excluded.jira_raw,
-      updated_at   = excluded.updated_at`,
+       id, project_id, name, description, release_date, start_date,
+       released, archived, jira_raw, received_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       project_id   = excluded.project_id,
+       name         = excluded.name,
+       description  = excluded.description,
+       release_date = excluded.release_date,
+       start_date   = excluded.start_date,
+       released     = excluded.released,
+       archived     = excluded.archived,
+       jira_raw     = excluded.jira_raw,
+       updated_at   = excluded.updated_at`,
     [
       String(version.id),
       String(version.projectId),
@@ -166,15 +231,10 @@ export async function upsertRelease(
       JSON.stringify(rawPayload),
       now,
       now,
-    ]
+    ],
   );
 }
 
-/**
- * Soft-delete: marks the release as deleted but keeps the row (and its task
- * instances) so the user can review and purge Google side-effects on their own
- * schedule. Call `purgeRelease` to hard-delete.
- */
 export async function deleteRelease(id: string): Promise<void> {
   const now = new Date().toISOString();
   await d1Query(
@@ -183,12 +243,6 @@ export async function deleteRelease(id: string): Promise<void> {
   );
 }
 
-/**
- * Hard-delete: removes the release row. Task instances cascade-delete via FK.
- * Any Google-side artifacts (Tasks, Calendar events) must be cleaned up by the
- * caller before purging — once the task instance rows are gone, their
- * external_id refs are too.
- */
 export async function purgeRelease(id: string): Promise<void> {
   await d1Query(`DELETE FROM releases WHERE id = ?`, [id]);
 }
@@ -196,15 +250,14 @@ export async function purgeRelease(id: string): Promise<void> {
 export async function getRelease(id: string): Promise<Release | null> {
   const { results } = await d1Query<ReleaseRow>(
     `SELECT * FROM releases WHERE id = ? LIMIT 1`,
-    [id]
+    [id],
   );
-  const row = results[0];
-  return row ? rowToRelease(row) : null;
+  return results[0] ? rowToRelease(results[0]) : null;
 }
 
 export async function listReleases(): Promise<Release[]> {
   const { results } = await d1Query<ReleaseRow>(
-    `SELECT * FROM releases ORDER BY release_date IS NULL, release_date DESC`
+    `SELECT * FROM releases ORDER BY release_date IS NULL, release_date DESC`,
   );
   return results.map(rowToRelease);
 }

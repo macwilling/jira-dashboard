@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   listTaskDefinitions,
   createTaskDefinition,
-} from "@/lib/releases/templates-store";
+} from "@/lib/releases/task-definitions-store";
 import type {
   ActionType,
   ConfigurableField,

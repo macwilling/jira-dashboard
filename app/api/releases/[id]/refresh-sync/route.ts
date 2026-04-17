@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { refreshSyncStatus } from "@/lib/releases/dispatcher";
-import { listTaskInstances } from "@/lib/releases/templates-store";
+import { listTaskInstances } from "@/lib/releases/task-instances-store";
 import { computeSyncState, summarizeSyncStates } from "@/lib/releases/sync-state";
 
 /**

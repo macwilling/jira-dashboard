@@ -11,7 +11,9 @@ import {
   Settings,
   ChevronsLeft,
   ChevronsRight,
-  ListChecks,
+  Workflow,
+  Tags,
+  Library,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTicketData } from "@/lib/ticket-data-context";
@@ -96,9 +98,23 @@ export function AppNav({
         ...(onReleases
           ? [
               {
-                href: "/releases/templates",
-                label: "Templates",
-                icon: ListChecks,
+                href: "/releases/workflows",
+                label: "Workflows",
+                icon: Workflow,
+                matchPrefix: true,
+                indent: true,
+              },
+              {
+                href: "/releases/categories",
+                label: "Categories",
+                icon: Tags,
+                matchPrefix: true,
+                indent: true,
+              },
+              {
+                href: "/releases/task-library",
+                label: "Task library",
+                icon: Library,
                 matchPrefix: true,
                 indent: true,
               },
@@ -193,7 +209,9 @@ function NavLink({
     ? item.href === "/releases"
       ? pathname === "/releases" ||
         (pathname.startsWith("/releases/") &&
-          !pathname.startsWith("/releases/templates"))
+          !pathname.startsWith("/releases/workflows") &&
+          !pathname.startsWith("/releases/categories") &&
+          !pathname.startsWith("/releases/task-library"))
       : pathname === item.href || pathname.startsWith(item.href + "/")
     : pathname === item.href;
 

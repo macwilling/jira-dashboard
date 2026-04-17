@@ -7,7 +7,7 @@ import {
   autoDispatchPendingInstances,
 } from "@/lib/releases/dispatcher";
 import { updateSlackMessage } from "@/lib/slack/client";
-import { listTaskInstances } from "@/lib/releases/templates-store";
+import { listTaskInstances } from "@/lib/releases/task-instances-store";
 import { buildApprovedBlocks } from "@/lib/releases/approval-message";
 
 /**

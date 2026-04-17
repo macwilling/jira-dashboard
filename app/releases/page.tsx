@@ -24,12 +24,13 @@ import type { SyncSummary } from "@/lib/releases/sync-state";
 import { parseReleaseName } from "@/lib/releases/matcher";
 
 interface ReleaseWithMeta extends Release {
-  matchedTemplates: { id: string; name: string }[];
+  category: { id: string; key: string } | null;
+  workflow: { id: string; name: string } | null;
   syncSummary: SyncSummary;
 }
 
 type ScopeFilter = "all" | "upcoming" | "released" | "archived" | "deleted";
-type TemplateFilter = "all" | "has" | "none";
+type WorkflowFilter = "all" | "has" | "none";
 
 type SortKey = "date" | "name" | "sync" | "status";
 type SortDir = "asc" | "desc";
@@ -42,10 +43,10 @@ const SCOPE_LABEL: Record<ScopeFilter, string> = {
   deleted: "Deleted",
 };
 
-const TEMPLATE_LABEL: Record<TemplateFilter, string> = {
-  all: "All templates",
-  has: "Has template",
-  none: "No template",
+const WORKFLOW_LABEL: Record<WorkflowFilter, string> = {
+  all: "All workflows",
+  has: "Has workflow",
+  none: "No workflow",
 };
 
 /** Reduces any ISO date or timestamp ("2026-04-13", "2026-04-13T00:00:00.0+0000") to YYYY-MM-DD. */
@@ -95,7 +96,7 @@ export default function ReleasesPage() {
   const [purgingId, setPurgingId] = useState<string | null>(null);
 
   const [scope, setScope] = useState<ScopeFilter>("upcoming");
-  const [templateFilter, setTemplateFilter] = useState<TemplateFilter>("all");
+  const [workflowFilter, setWorkflowFilter] = useState<WorkflowFilter>("all");
   const [platform, setPlatform] = useState<string>("");
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -129,15 +130,15 @@ export default function ReleasesPage() {
       if (scope === "released" && !r.released) return false;
       if (scope === "released" && r.archived) return false;
       if (scope === "archived" && !r.archived) return false;
-      if (templateFilter === "has" && r.matchedTemplates.length === 0) return false;
-      if (templateFilter === "none" && r.matchedTemplates.length > 0) return false;
+      if (workflowFilter === "has" && !r.workflow) return false;
+      if (workflowFilter === "none" && r.workflow) return false;
       if (platform) {
         const { platform: p } = parseReleaseName(r.name);
         if (p !== platform) return false;
       }
       return true;
     });
-  }, [releases, scope, templateFilter, platform]);
+  }, [releases, scope, workflowFilter, platform]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -182,15 +183,15 @@ export default function ReleasesPage() {
   }, [releases]);
 
   // Count unmatched actionable releases (upcoming, not released/archived/deleted).
-  // These are ones where a Jira version name likely has a typo — no template
-  // matched, so no tasks were generated.
+  // "Unmatched" now means: the release name didn't parse into any category, OR
+  // the matched category has no workflow assigned. Either way, no tasks fire.
   const unmatchedCount = useMemo(() => {
     return releases.filter(
       (r) =>
         !r.deletedAt &&
         !r.released &&
         !r.archived &&
-        r.matchedTemplates.length === 0,
+        !r.workflow,
     ).length;
   }, [releases]);
 
@@ -291,13 +292,13 @@ export default function ReleasesPage() {
                 </select>
               )}
               <select
-                value={templateFilter}
-                onChange={(e) => setTemplateFilter(e.target.value as TemplateFilter)}
+                value={workflowFilter}
+                onChange={(e) => setWorkflowFilter(e.target.value as WorkflowFilter)}
                 className="text-xs h-7 rounded-md border bg-background px-2 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                title="Filter by template match"
+                title="Filter by workflow assignment"
               >
-                {(Object.keys(TEMPLATE_LABEL) as TemplateFilter[]).map((t) => (
-                  <option key={t} value={t}>{TEMPLATE_LABEL[t]}</option>
+                {(Object.keys(WORKFLOW_LABEL) as WorkflowFilter[]).map((t) => (
+                  <option key={t} value={t}>{WORKFLOW_LABEL[t]}</option>
                 ))}
               </select>
               <span className="text-xs text-muted-foreground tabular-nums pl-1">
@@ -330,11 +331,11 @@ export default function ReleasesPage() {
 
             {/* Unmatched badge — surfaces releases whose Jira names probably have typos.
                 No template matched = no tasks fired, so the release manager needs to know. */}
-            {unmatchedCount > 0 && templateFilter !== "none" && (
+            {unmatchedCount > 0 && workflowFilter !== "none" && (
               <button
                 type="button"
                 onClick={() => {
-                  setTemplateFilter("none");
+                  setWorkflowFilter("none");
                   setScope("upcoming");
                 }}
                 className="w-full rounded-md border border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10 transition-colors px-3 py-2 flex items-center gap-2 text-left"
@@ -343,11 +344,12 @@ export default function ReleasesPage() {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-amber-800 dark:text-amber-300">
                     <span className="font-medium tabular-nums">{unmatchedCount}</span>{" "}
-                    upcoming release{unmatchedCount === 1 ? "" : "s"} with no matching template
+                    upcoming release{unmatchedCount === 1 ? "" : "s"} with no workflow
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Likely a typo in the Jira version name (expected{" "}
-                    <code className="bg-muted px-1 rounded">platform@x.y.z</code>). Click to filter.
+                    Either the Jira version name didn&apos;t match a category (expected{" "}
+                    <code className="bg-muted px-1 rounded">platform@x.y.z</code>), or the
+                    matched category has no workflow assigned. Click to filter.
                   </p>
                 </div>
               </button>
@@ -408,7 +410,7 @@ export default function ReleasesPage() {
                         className="w-56"
                       />
                       <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        Template
+                        Workflow
                       </th>
                       <SortableTh
                         label="Status"
@@ -526,25 +528,26 @@ function ReleaseRow({
       </td>
 
       <td className="px-3 py-2.5">
-        {release.matchedTemplates.length === 0 ? (
-          <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
-            <AlertCircle className="h-3 w-3" />
-            No template
-          </span>
-        ) : release.matchedTemplates.length === 1 ? (
+        {release.workflow ? (
           <Link
-            href={`/releases/templates/${release.matchedTemplates[0].id}`}
+            href={`/releases/workflows/${release.workflow.id}`}
             className="text-xs text-muted-foreground hover:text-foreground hover:underline"
             onClick={(e) => e.stopPropagation()}
           >
-            {release.matchedTemplates[0].name}
+            {release.workflow.name}
           </Link>
+        ) : !release.categoryId ? (
+          <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+            <AlertCircle className="h-3 w-3" />
+            No category
+          </span>
         ) : (
           <span
-            className="text-xs text-muted-foreground"
-            title={release.matchedTemplates.map((t) => t.name).join(" + ")}
+            className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400"
+            title={`Category ${release.category?.key ?? release.categoryId} has no workflow assigned`}
           >
-            {release.matchedTemplates.map((t) => t.name).join(" + ")}
+            <AlertCircle className="h-3 w-3" />
+            No workflow
           </span>
         )}
       </td>
