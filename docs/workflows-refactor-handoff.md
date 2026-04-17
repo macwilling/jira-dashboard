@@ -2,9 +2,9 @@
 
 Branch: `workflows-refactor`
 
-Status as of this commit: **build green; pickup at Phase 6.** Server pipeline is rebuilt (types → store → orchestrator → webhook) and the UI compiles against the new workflow/category model. Resolution/unmatched banners and the workflows+categories admin UIs are still to be built.
+Status: **all phases complete.** Server pipeline, resolution flow, cron recovery, admin UIs (workflows + categories + task library), release detail banners, and the refreshed architecture doc are all in. Merge candidate pending a live verification pass.
 
-**Start here next session**: Phase 6 (workflows + categories admin UI). See "Next-session pickup" below.
+> Historical note preserved below. The "Next-session pickup" section is superseded by the [Completion notes](#completion-notes) at the bottom.
 
 ## What's done
 
@@ -107,8 +107,26 @@ Suggested order (each can be a separate commit):
 - [x] #2 Phase 2: D1 schema reset
 - [x] #3 Phase 3: orchestrator + core libs
 - [x] #4 Phase 4: webhook route becomes thin handler
-- [ ] #5 Phase 5: Cloudflare cron recovery
-- [ ] #6 Phase 6: workflows + categories UI
-- [ ] #7 Phase 7: release detail — unmatched + resolution banner
-- [ ] #8 Phase 8: category-change resolution flow
-- [ ] #9 Phase 9: rename admin target + polish
+- [x] #5 Phase 5: Cloudflare cron recovery
+- [x] #6 Phase 6: workflows + categories UI
+- [x] #7 Phase 7: release detail — unmatched + resolution banner
+- [x] #8 Phase 8: category-change resolution flow
+- [x] #9 Phase 9: rename admin target + polish
+
+## Completion notes
+
+- **Phase 6** — `/releases/workflows` (list + editor) and `/releases/categories` built. API: `app/api/releases/workflows/route.ts`, `app/api/releases/workflows/[id]/route.ts`, `app/api/releases/categories/route.ts`. Nav in `components/app-shell/AppNav.tsx` updated: Templates link replaced by Workflows / Categories / Task library. The old `/releases/templates` path is dead.
+- **Phase 7** — Unmatched banner and resolution banner + 3-card decision UI added in `app/releases/[id]/page.tsx`. When `resolutionRequired`, the task list is replaced with the cards so it's clear the release is frozen.
+- **Phase 8** — `/api/releases/[id]/resolve` endpoint + Slack interactive action IDs wired. Shared logic in `lib/releases/resolution.ts`. Slack side updates the original message in place with the outcome.
+- **Phase 5** — `app/api/cron/recover/route.ts` diffs Jira's version list against D1 and replays orchestrator events. Separate Cloudflare Worker at `cron/` on a 5-min schedule calls it. New env vars: `CRON_RECOVERY_SECRET` (app + worker), `JIRA_PROJECT_KEY` (app), `APP_URL` (worker).
+- **Phase 9** — Settings UI "Release Approval" relabeled to "Release Admin Alerts" with copy that explains per-workflow approval is configured on each workflow. `docs/release-flow.md` fully rewritten against the new model (new mermaid, new file map, new text).
+
+## Deployment checklist
+
+Before merging `workflows-refactor` to `main`:
+
+1. Run `migrations/0012_workflows_refactor.sql` in Cloudflare D1 (destructive — drops old template tables).
+2. Set new env vars in Vercel: `CRON_RECOVERY_SECRET`, `JIRA_PROJECT_KEY`.
+3. Deploy the cron worker in `cron/`: set `APP_URL` var and `CRON_RECOVERY_SECRET` secret, then `wrangler deploy`.
+4. On first release after deploy, verify: category resolution writes the right `category_id`, task generation respects the assigned workflow, approval Slack target comes from the workflow (not KV).
+5. Re-point the Slack app's Interactivity Request URL if your deploy host changed — the new resolution buttons reuse that endpoint.

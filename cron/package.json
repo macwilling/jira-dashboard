@@ -1,0 +1,16 @@
+{
+  "name": "jira-release-recovery",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare cron worker that replays missed Jira version webhooks via the app's /api/cron/recover endpoint.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^3.95.0"
+  }
+}

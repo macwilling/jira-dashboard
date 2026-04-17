@@ -21,6 +21,9 @@ import {
   Clock,
   Check,
   X as XIcon,
+  AlertOctagon,
+  RefreshCcw,
+  ShieldAlert,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
@@ -46,7 +49,10 @@ import type {
   Workflow,
   ReleaseTaskInstance,
   ActionType,
+  ResolutionSnapshot,
 } from "@/lib/releases/types";
+
+type ResolutionAction = "keep_original" | "switch_workflow" | "discard";
 import type { SyncState, SyncSummary } from "@/lib/releases/sync-state";
 
 type InstanceWithState = ReleaseTaskInstance & { syncState: SyncState };
@@ -205,6 +211,8 @@ export default function ReleasePage() {
   const [purging, setPurging] = useState(false);
   const [approving, setApproving] = useState(false);
   const [cancellingApproval, setCancellingApproval] = useState(false);
+  const [resolving, setResolving] = useState<ResolutionAction | null>(null);
+  const [resolveError, setResolveError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -355,6 +363,33 @@ export default function ReleasePage() {
       }
     } finally {
       setApproving(false);
+    }
+  };
+
+  const handleResolve = async (action: ResolutionAction) => {
+    const confirmMsg =
+      action === "discard"
+        ? "Discard all non-completed tasks for this release? Google Tasks / Calendar events for them will also be deleted."
+        : action === "switch_workflow"
+          ? "Switch to the new workflow? Tasks from the old workflow will be deleted (remote + local) and fresh ones generated."
+          : "Keep the original workflow? This release stays on the old category — future Jira updates won't re-trigger resolution for the same change.";
+    if (!confirm(confirmMsg)) return;
+    setResolving(action);
+    setResolveError(null);
+    try {
+      const res = await fetch(`/api/releases/${id}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setResolveError(data.error || "Resolution failed");
+        return;
+      }
+      load();
+    } finally {
+      setResolving(null);
     }
   };
 
@@ -519,11 +554,94 @@ export default function ReleasePage() {
           </div>
         )}
 
+        {/* Resolution banner — release is frozen pending admin choice because
+            its category changed after tasks existed. Displaces the task list
+            with a three-card decision UI driven by the snapshot. */}
+        {release.resolutionRequired &&
+          release.resolutionSnapshot &&
+          !release.deletedAt && (
+            <div className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 flex items-start gap-3 text-sm">
+              <ShieldAlert className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5 shrink-0" />
+              <div className="space-y-0.5">
+                <p className="font-medium text-red-700 dark:text-red-400">
+                  Resolution required — category changed
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Jira renamed this release from a <code className="bg-muted px-1 rounded">{release.resolutionSnapshot.oldCategoryKey ?? "?"}</code>{" "}
+                  release into{" "}
+                  <code className="bg-muted px-1 rounded">
+                    {release.resolutionSnapshot.newCategoryKey ?? "unmatched"}
+                  </code>
+                  . All task generation, dispatch, and notifications are frozen
+                  until you pick a path below.
+                </p>
+              </div>
+            </div>
+          )}
+
+        {/* Unmatched banner — prominent alert when the release isn't wired to a
+            workflow. Two distinct causes: no category parsed, or category has
+            no workflow assigned. Only show when not deleted, not pending
+            resolution (the resolution banner takes precedence), and not
+            already released. */}
+        {!release.resolutionRequired &&
+          !release.deletedAt &&
+          !release.released &&
+          !workflow && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 flex items-start gap-3 text-sm">
+              <AlertOctagon className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <div className="flex-1 space-y-0.5">
+                {!release.categoryId ? (
+                  <>
+                    <p className="font-medium text-amber-700 dark:text-amber-400">
+                      Unmatched — name didn&apos;t parse
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Expected <code className="bg-muted px-1 rounded">platform@x.y.z</code>.
+                      Until the Jira version name parses into one of the{" "}
+                      <Link
+                        href="/releases/categories"
+                        className="underline hover:text-foreground"
+                      >
+                        configured categories
+                      </Link>
+                      , no tasks, notifications, or approvals fire for this
+                      release.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-medium text-amber-700 dark:text-amber-400">
+                      Category{" "}
+                      <code className="bg-background px-1 rounded font-mono">
+                        {category?.key ?? release.categoryId}
+                      </code>{" "}
+                      has no workflow
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Assign one on the{" "}
+                      <Link
+                        href="/releases/categories"
+                        className="underline hover:text-foreground"
+                      >
+                        categories page
+                      </Link>
+                      . Until then, no tasks, notifications, or approvals fire
+                      for this release.
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
         {/* Approval banner — pending, approved (recently), or cancelled.
             Pending is actionable and shows Approve/Cancel buttons as a
             fallback for when the Slack interactive path fails. Approved and
             cancelled are passive state reminders. */}
-        {release.approvalStatus === "pending" && !release.deletedAt && (
+        {release.approvalStatus === "pending" &&
+          !release.resolutionRequired &&
+          !release.deletedAt && (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 flex items-start gap-3 text-sm">
             <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
             <div className="flex-1 space-y-0.5">
@@ -664,8 +782,17 @@ export default function ReleasePage() {
           )}
         </section>
 
-        {/* Tasks grouped by phase */}
-        {groups.length > 0 ? (
+        {/* Resolution cards — shown instead of the task list while resolution
+            is required. Three choices driven by the snapshot. */}
+        {release.resolutionRequired && release.resolutionSnapshot && !release.deletedAt ? (
+          <ResolutionCards
+            snapshot={release.resolutionSnapshot}
+            resolving={resolving}
+            error={resolveError}
+            onResolve={handleResolve}
+          />
+        ) : /* Tasks grouped by phase */
+        groups.length > 0 ? (
           <div className="space-y-5">
             {groups.map((group) => (
               <section key={group.key} className="space-y-2">
@@ -931,6 +1058,185 @@ function TaskRow({
           {detailError}
         </div>
       )}
+    </div>
+  );
+}
+
+function ResolutionCards({
+  snapshot,
+  resolving,
+  error,
+  onResolve,
+}: {
+  snapshot: ResolutionSnapshot;
+  resolving: ResolutionAction | null;
+  error: string | null;
+  onResolve: (action: ResolutionAction) => void;
+}) {
+  const totalNonCompleted =
+    snapshot.taskCounts.pending + snapshot.taskCounts.dispatched;
+  const hasNewWorkflow = !!snapshot.newWorkflowId;
+
+  return (
+    <section className="space-y-3">
+      <div>
+        <h2 className="text-sm font-semibold">Pick a resolution</h2>
+        <p className="text-xxs text-muted-foreground">
+          Snapshot at {snapshot.detectedAt.slice(0, 16).replace("T", " ")} UTC —{" "}
+          {snapshot.taskCounts.pending} pending ·{" "}
+          {snapshot.taskCounts.dispatched} dispatched ·{" "}
+          {snapshot.taskCounts.completed} completed.
+        </p>
+      </div>
+
+      {error && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-700 dark:text-red-400">
+          {error}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <ResolutionCard
+          tone="neutral"
+          icon={RotateCcw}
+          title="Keep original workflow"
+          summary={
+            <>
+              Stay on{" "}
+              <span className="font-medium text-foreground">
+                {snapshot.oldWorkflowName ?? "the old workflow"}
+              </span>
+              . All {totalNonCompleted} existing task
+              {totalNonCompleted === 1 ? "" : "s"} remain as-is.
+            </>
+          }
+          when="Use when the Jira rename was a typo or a cosmetic change and the release should still behave like a {snapshot.oldCategoryKey} release."
+          buttonLabel="Keep original"
+          buttonVariant="outline"
+          loading={resolving === "keep_original"}
+          disabled={resolving !== null}
+          onClick={() => onResolve("keep_original")}
+        />
+
+        <ResolutionCard
+          tone={hasNewWorkflow ? "primary" : "disabled"}
+          icon={RefreshCcw}
+          title="Switch to new workflow"
+          summary={
+            hasNewWorkflow ? (
+              <>
+                Move to{" "}
+                <span className="font-medium text-foreground">
+                  {snapshot.newWorkflowName ?? "the new workflow"}
+                </span>
+                . Deletes {totalNonCompleted} non-completed task
+                {totalNonCompleted === 1 ? "" : "s"} (Google resources
+                included) and generates fresh ones.
+              </>
+            ) : (
+              <>
+                New category{" "}
+                <code className="bg-muted px-1 rounded">
+                  {snapshot.newCategoryKey ?? "unmatched"}
+                </code>{" "}
+                has no workflow assigned — not available. Assign a workflow
+                first.
+              </>
+            )
+          }
+          when="Use when the Jira rename reflects the actual release shape and the release should run the new workflow's tasks."
+          buttonLabel="Switch workflow"
+          buttonVariant="default"
+          loading={resolving === "switch_workflow"}
+          disabled={resolving !== null || !hasNewWorkflow}
+          onClick={() => onResolve("switch_workflow")}
+        />
+
+        <ResolutionCard
+          tone="danger"
+          icon={Trash2}
+          title="Discard all"
+          summary={
+            <>
+              Remove all {totalNonCompleted} non-completed task
+              {totalNonCompleted === 1 ? "" : "s"} (Google resources included).
+              The release is marked unmatched and won&apos;t fire anything
+              until you reassign it.
+            </>
+          }
+          when="Use when the rename means this release is cancelled or will be managed entirely out-of-band."
+          buttonLabel="Discard all"
+          buttonVariant="destructive"
+          loading={resolving === "discard"}
+          disabled={resolving !== null}
+          onClick={() => onResolve("discard")}
+        />
+      </div>
+    </section>
+  );
+}
+
+function ResolutionCard({
+  tone,
+  icon: Icon,
+  title,
+  summary,
+  when,
+  buttonLabel,
+  buttonVariant,
+  loading,
+  disabled,
+  onClick,
+}: {
+  tone: "neutral" | "primary" | "danger" | "disabled";
+  icon: typeof RotateCcw;
+  title: string;
+  summary: React.ReactNode;
+  when: string;
+  buttonLabel: string;
+  buttonVariant: "default" | "outline" | "destructive";
+  loading: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const toneClass =
+    tone === "primary"
+      ? "border-primary/30"
+      : tone === "danger"
+        ? "border-red-500/20"
+        : tone === "disabled"
+          ? "opacity-60"
+          : "";
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border bg-card p-4 flex flex-col gap-3 min-h-[220px]",
+        toneClass,
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
+        <h3 className="text-sm font-semibold">{title}</h3>
+      </div>
+      <p className="text-xs text-muted-foreground flex-1">{summary}</p>
+      <p className="text-xxs text-muted-foreground/80 border-t pt-2">
+        <span className="font-medium">When:</span> {when}
+      </p>
+      <Button
+        size="sm"
+        variant={buttonVariant}
+        onClick={onClick}
+        disabled={disabled}
+        className="h-7 text-xs gap-1.5"
+      >
+        {loading ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <Icon className="h-3 w-3" />
+        )}
+        {buttonLabel}
+      </Button>
     </div>
   );
 }

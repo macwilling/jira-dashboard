@@ -21,6 +21,16 @@ import {
   buildTestCancelledBlocks,
   decodeButtonValue,
 } from "@/lib/releases/approval-message";
+import {
+  RESOLUTION_KEEP_ORIGINAL_ACTION,
+  RESOLUTION_SWITCH_WORKFLOW_ACTION,
+  RESOLUTION_DISCARD_ACTION,
+  RESOLUTION_VIEW_ACTION,
+} from "@/lib/releases/admin-notifier";
+import {
+  resolveRelease,
+  type ResolutionAction,
+} from "@/lib/releases/resolution";
 
 /**
  * Slack interactive endpoint.
@@ -115,6 +125,103 @@ export async function POST(req: NextRequest) {
   // we just ack since the browser already navigated.
   if (action.action_id === "release_view") {
     return NextResponse.json({ ok: true });
+  }
+
+  // View-only link button on the resolution alert — Slack pings the endpoint
+  // even though it's a URL button. Ack silently.
+  if (action.action_id === RESOLUTION_VIEW_ACTION) {
+    return NextResponse.json({ ok: true });
+  }
+
+  // Category-change resolution buttons. Each action value is just the release
+  // ID (no versioning — resolution state is a single-shot transition, not a
+  // serialized flow). The three branches all share the same shape: resolve,
+  // then update the Slack message in place with the outcome.
+  const resolutionMap: Record<string, ResolutionAction> = {
+    [RESOLUTION_KEEP_ORIGINAL_ACTION]: "keep_original",
+    [RESOLUTION_SWITCH_WORKFLOW_ACTION]: "switch_workflow",
+    [RESOLUTION_DISCARD_ACTION]: "discard",
+  };
+  const resolutionAction = resolutionMap[action.action_id];
+  if (resolutionAction) {
+    const releaseId = action.value?.trim();
+    if (!releaseId) {
+      return NextResponse.json(
+        { error: "missing release id" },
+        { status: 400 },
+      );
+    }
+    const userId = payload.user?.id ?? null;
+    const channel = payload.channel?.id ?? null;
+    const ts = payload.message?.ts ?? null;
+
+    try {
+      const result = await resolveRelease({
+        releaseId,
+        action: resolutionAction,
+        actor: userId,
+      });
+      if (channel && ts) {
+        const outcomeText = buildResolutionOutcomeText(
+          result.action,
+          userId,
+          result.googleErrors.length,
+        );
+        await updateSlackMessage({
+          channel,
+          ts,
+          text: outcomeText,
+          blocks: [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: outcomeText },
+            },
+            {
+              type: "context",
+              elements: [
+                {
+                  type: "mrkdwn",
+                  text: `Resolved at <!date^${Math.floor(
+                    Date.now() / 1000,
+                  )}^{date_short_pretty} {time}|${new Date().toISOString()}>`,
+                },
+              ],
+            },
+          ],
+        }).catch((err) =>
+          console.warn("[slack interactive] resolution update failed", err),
+        );
+      }
+      // Ephemeral confirmation in case Slack doesn't show the primary update fast.
+      const responseUrl = payload.response_url;
+      if (responseUrl) {
+        await fetch(responseUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            response_type: "ephemeral",
+            replace_original: false,
+            text: `:white_check_mark: Resolution applied: \`${resolutionAction}\`.`,
+          }),
+        }).catch(() => {});
+      }
+      return NextResponse.json({ ok: true });
+    } catch (e) {
+      console.error("[slack interactive] resolve failed", e);
+      const responseUrl = payload.response_url;
+      if (responseUrl) {
+        await fetch(responseUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            response_type: "ephemeral",
+            replace_original: false,
+            text: `:x: Resolution failed: ${(e as Error).message}`,
+          }),
+        }).catch(() => {});
+      }
+      return NextResponse.json({ ok: true });
+    }
   }
 
   // Round-trip test from the settings page — edit the message in place and
@@ -231,6 +338,26 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({ ok: true });
+}
+
+function buildResolutionOutcomeText(
+  action: ResolutionAction,
+  userId: string | null,
+  googleErrorCount: number,
+): string {
+  const by = userId ? ` by <@${userId}>` : "";
+  const errors =
+    googleErrorCount > 0
+      ? ` — ${googleErrorCount} Google artifact${googleErrorCount === 1 ? "" : "s"} couldn't be deleted; check the release page.`
+      : "";
+  switch (action) {
+    case "keep_original":
+      return `✅ Kept original workflow${by}.`;
+    case "switch_workflow":
+      return `🔁 Switched to new workflow${by}.${errors}`;
+    case "discard":
+      return `🗑 Discarded all tasks${by}.${errors}`;
+  }
 }
 
 /**

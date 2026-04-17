@@ -586,26 +586,38 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        {/* RELEASE APPROVAL */}
+        {/* RELEASE ADMIN ALERTS */}
         <section className="space-y-3">
           <div>
             <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Release Approval
+              Release Admin Alerts
             </h2>
             <p className="text-xxs text-muted-foreground mt-1">
-              Gate release task dispatch behind a Slack approval message.
+              Where to send global release alerts that don&apos;t belong to a
+              specific workflow.
             </p>
           </div>
 
           <div className="rounded-lg border p-4 space-y-4">
             <p className="text-xs text-muted-foreground leading-relaxed">
-              When set, the Jira version webhook materializes task instances but holds Google
-              dispatch until you click <span className="font-medium">Approve</span> on an
-              interactive Slack message. Leave empty to auto-dispatch (current behavior).
+              Admin alerts fire when a release needs manual intervention and no
+              workflow can handle it — currently, the{" "}
+              <span className="font-medium">category-change resolution</span>{" "}
+              prompt (pick keep / switch / discard). Per-workflow approval
+              gates are configured on each{" "}
+              <a
+                href="/releases/workflows"
+                className="underline hover:text-foreground"
+              >
+                workflow
+              </a>
+              , not here. Leave empty to skip admin alerts — the same state is
+              visible on the release detail page either way. You can also use
+              this target to round-trip-test your Slack interactivity setup.
             </p>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">Approval channel or DM</Label>
+              <Label className="text-xs">Admin channel or DM</Label>
               <div className="flex items-center gap-2 flex-wrap">
                 <SlackTargetPicker
                   value={releaseApprovalTarget}
@@ -638,8 +650,8 @@ export default function SettingsPage() {
                 </Button>
               </div>
               <p className="text-xxs text-muted-foreground">
-                Pick a channel (#releases) or DM yourself. The bot must be a member of the channel
-                to post.
+                Pick a channel (#releases-admin) or DM yourself. The bot must
+                be a member of the channel to post.
               </p>
 
               {approvalTestResult?.kind === "sent" && (

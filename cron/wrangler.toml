@@ -1,0 +1,26 @@
+# Cloudflare Worker for release webhook recovery.
+#
+# Polls the app's /api/cron/recover endpoint every 5 minutes. The endpoint
+# handles everything else (Jira fetch, D1 diff, handleVersionEvent replay),
+# so the worker is intentionally trivial — this file is the orchestration,
+# the recovery logic lives in the Next.js app where it already has Jira and
+# D1 clients wired up.
+
+name = "jira-release-recovery"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+
+# Every 5 minutes. Free tier allows up to 500k requests / day + 3 simultaneous
+# scheduled events, well under our usage. Adjust if you need a different
+# cadence — sub-minute requires a paid plan.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Vars and secrets:
+#   APP_URL             — public base URL of the Next.js deploy (no trailing slash)
+#   CRON_RECOVERY_SECRET — secret, matches the app's env var of the same name
+#
+# Set vars with `wrangler deploy --var APP_URL:https://…` or via the dashboard.
+# Set secrets with `wrangler secret put CRON_RECOVERY_SECRET`.
+[vars]
+APP_URL = "https://deliverygo.macwillingham.com"  # override per-environment
