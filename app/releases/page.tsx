@@ -16,6 +16,8 @@ import {
   XCircle,
   Ghost,
   Clock,
+  EyeOff,
+  Eye,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { cn } from "@/lib/utils";
@@ -29,7 +31,7 @@ interface ReleaseWithMeta extends Release {
   syncSummary: SyncSummary;
 }
 
-type ScopeFilter = "all" | "upcoming" | "released" | "archived" | "deleted";
+type ScopeFilter = "all" | "upcoming" | "released" | "archived" | "deleted" | "ignored";
 type WorkflowFilter = "all" | "has" | "none";
 
 type SortKey = "date" | "name" | "sync" | "status";
@@ -41,6 +43,7 @@ const SCOPE_LABEL: Record<ScopeFilter, string> = {
   released: "Released",
   archived: "Archived",
   deleted: "Deleted",
+  ignored: "Ignored",
 };
 
 const WORKFLOW_LABEL: Record<WorkflowFilter, string> = {
@@ -94,6 +97,7 @@ export default function ReleasesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [purgingId, setPurgingId] = useState<string | null>(null);
+  const [togglingIgnoreId, setTogglingIgnoreId] = useState<string | null>(null);
 
   const [scope, setScope] = useState<ScopeFilter>("upcoming");
   const [workflowFilter, setWorkflowFilter] = useState<WorkflowFilter>("all");
@@ -120,6 +124,9 @@ export default function ReleasesPage() {
 
   const filtered = useMemo(() => {
     return releases.filter((r) => {
+      // Ignored releases only appear under the Ignored scope.
+      if (scope === "ignored") return r.ignored;
+      if (r.ignored) return false;
       // Soft-deleted releases only appear under the Deleted scope.
       if (scope === "deleted") {
         if (!r.deletedAt) return false;
@@ -168,12 +175,10 @@ export default function ReleasesPage() {
   }, [filtered, sortKey, sortDir]);
 
   const counts = useMemo(() => {
-    const c = { all: 0, upcoming: 0, released: 0, archived: 0, deleted: 0 };
+    const c = { all: 0, upcoming: 0, released: 0, archived: 0, deleted: 0, ignored: 0 };
     for (const r of releases) {
-      if (r.deletedAt) {
-        c.deleted++;
-        continue;
-      }
+      if (r.ignored) { c.ignored++; continue; }
+      if (r.deletedAt) { c.deleted++; continue; }
       c.all++;
       if (r.archived) c.archived++;
       else if (r.released) c.released++;
@@ -189,6 +194,7 @@ export default function ReleasesPage() {
     return releases.filter(
       (r) =>
         !r.deletedAt &&
+        !r.ignored &&
         !r.released &&
         !r.archived &&
         !r.workflow,
@@ -198,7 +204,7 @@ export default function ReleasesPage() {
   // Releases sitting in "pending approval" — actionable, waiting on a human click.
   const pendingApprovalCount = useMemo(() => {
     return releases.filter(
-      (r) => !r.deletedAt && r.approvalStatus === "pending",
+      (r) => !r.deletedAt && !r.ignored && r.approvalStatus === "pending",
     ).length;
   }, [releases]);
 
@@ -228,6 +234,27 @@ export default function ReleasesPage() {
       }
     } finally {
       setPurgingId(null);
+    }
+  };
+
+  const handleToggleIgnore = async (release: ReleaseWithMeta) => {
+    const next = !release.ignored;
+    setTogglingIgnoreId(release.id);
+    try {
+      const res = await fetch("/api/releases/bulk-ignore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [release.id], ignored: next }),
+      });
+      if (res.ok) {
+        setReleases((prev) =>
+          prev.map((r) =>
+            r.id === release.id ? { ...r, ignored: next } : r,
+          ),
+        );
+      }
+    } finally {
+      setTogglingIgnoreId(null);
     }
   };
 
@@ -430,6 +457,8 @@ export default function ReleasesPage() {
                         release={release}
                         onPurge={handlePurge}
                         purging={purgingId === release.id}
+                        onToggleIgnore={handleToggleIgnore}
+                        togglingIgnore={togglingIgnoreId === release.id}
                       />
                     ))}
                   </tbody>
@@ -483,10 +512,14 @@ function ReleaseRow({
   release,
   onPurge,
   purging,
+  onToggleIgnore,
+  togglingIgnore,
 }: {
   release: ReleaseWithMeta;
   onPurge: (release: ReleaseWithMeta) => void;
   purging: boolean;
+  onToggleIgnore: (release: ReleaseWithMeta) => void;
+  togglingIgnore: boolean;
 }) {
   const { platform: p, releaseType: rt } = parseReleaseName(release.name);
   const date = relativeDate(release.releaseDate, release.released);
@@ -557,7 +590,7 @@ function ReleaseRow({
       </td>
 
       <td className="px-2 py-2.5 text-right">
-        {release.deletedAt && (
+        {release.deletedAt ? (
           <button
             type="button"
             onClick={() => onPurge(release)}
@@ -571,6 +604,23 @@ function ReleaseRow({
               <Trash2 className="h-3 w-3" />
             )}
             Purge
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onToggleIgnore(release)}
+            disabled={togglingIgnore}
+            title={release.ignored ? "Unignore — resume automation" : "Ignore — hide and skip automation"}
+            className="inline-flex items-center gap-1 h-6 px-2 rounded text-[11px] font-medium text-muted-foreground hover:bg-muted disabled:opacity-60"
+          >
+            {togglingIgnore ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : release.ignored ? (
+              <Eye className="h-3 w-3" />
+            ) : (
+              <EyeOff className="h-3 w-3" />
+            )}
+            {release.ignored ? "Unignore" : "Ignore"}
           </button>
         )}
       </td>
