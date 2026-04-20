@@ -14,10 +14,7 @@ import {
   AlertTriangle,
   Trash2,
   XCircle,
-  Ghost,
   Clock,
-  EyeOff,
-  Eye,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { cn } from "@/lib/utils";
@@ -44,12 +41,6 @@ const SCOPE_LABEL: Record<ScopeFilter, string> = {
   archived: "Archived",
   deleted: "Deleted",
   ignored: "Ignored",
-};
-
-const WORKFLOW_LABEL: Record<WorkflowFilter, string> = {
-  all: "All workflows",
-  has: "Has workflow",
-  none: "No workflow",
 };
 
 /** Reduces any ISO date or timestamp ("2026-04-13", "2026-04-13T00:00:00.0+0000") to YYYY-MM-DD. */
@@ -96,8 +87,6 @@ export default function ReleasesPage() {
   const [releases, setReleases] = useState<ReleaseWithMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [purgingId, setPurgingId] = useState<string | null>(null);
-  const [togglingIgnoreId, setTogglingIgnoreId] = useState<string | null>(null);
 
   const [scope, setScope] = useState<ScopeFilter>("upcoming");
   const [workflowFilter, setWorkflowFilter] = useState<WorkflowFilter>("all");
@@ -208,55 +197,6 @@ export default function ReleasesPage() {
     ).length;
   }, [releases]);
 
-  const handlePurge = async (release: ReleaseWithMeta) => {
-    const msg =
-      `Purge "${release.name}"? This deletes the release and its task history from this app, ` +
-      `and attempts to delete any Google Tasks / Calendar events the app created for it.`;
-    if (!confirm(msg)) return;
-    setPurgingId(release.id);
-    try {
-      const res = await fetch(`/api/releases/${release.id}/purge`, {
-        method: "DELETE",
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        alert(data.error || "Purge failed");
-        return;
-      }
-      setReleases((prev) => prev.filter((r) => r.id !== release.id));
-      if (data.errors && data.errors.length > 0) {
-        const lines = data.errors
-          .map((e: { label: string; error: string }) => `• ${e.label}: ${e.error}`)
-          .join("\n");
-        alert(
-          `Release purged. Some Google cleanup failed — delete these by hand:\n\n${lines}`,
-        );
-      }
-    } finally {
-      setPurgingId(null);
-    }
-  };
-
-  const handleToggleIgnore = async (release: ReleaseWithMeta) => {
-    const next = !release.ignored;
-    setTogglingIgnoreId(release.id);
-    try {
-      const res = await fetch("/api/releases/bulk-ignore", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: [release.id], ignored: next }),
-      });
-      if (res.ok) {
-        setReleases((prev) =>
-          prev.map((r) =>
-            r.id === release.id ? { ...r, ignored: next } : r,
-          ),
-        );
-      }
-    } finally {
-      setTogglingIgnoreId(null);
-    }
-  };
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -318,16 +258,6 @@ export default function ReleasesPage() {
                   ))}
                 </select>
               )}
-              <select
-                value={workflowFilter}
-                onChange={(e) => setWorkflowFilter(e.target.value as WorkflowFilter)}
-                className="text-xs h-7 rounded-md border bg-background px-2 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                title="Filter by workflow assignment"
-              >
-                {(Object.keys(WORKFLOW_LABEL) as WorkflowFilter[]).map((t) => (
-                  <option key={t} value={t}>{WORKFLOW_LABEL[t]}</option>
-                ))}
-              </select>
               <span className="text-xs text-muted-foreground tabular-nums pl-1">
                 {sorted.length === releases.length
                   ? `${releases.length}`
@@ -410,7 +340,14 @@ export default function ReleasesPage() {
 
             {sorted.length > 0 && (
               <div className="rounded-lg border overflow-hidden bg-card">
-                <table className="w-full text-sm">
+                <table className="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col className="w-[28%]" />
+                    <col className="w-[20%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[16%]" />
+                    <col className="w-[18%]" />
+                  </colgroup>
                   <thead className="bg-muted/40 border-b">
                     <tr className="text-left">
                       <SortableTh
@@ -426,7 +363,6 @@ export default function ReleasesPage() {
                         activeKey={sortKey}
                         dir={sortDir}
                         onClick={toggleSort}
-                        className="w-48"
                       />
                       <SortableTh
                         label="Sync"
@@ -434,7 +370,6 @@ export default function ReleasesPage() {
                         activeKey={sortKey}
                         dir={sortDir}
                         onClick={toggleSort}
-                        className="w-56"
                       />
                       <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         Workflow
@@ -445,9 +380,7 @@ export default function ReleasesPage() {
                         activeKey={sortKey}
                         dir={sortDir}
                         onClick={toggleSort}
-                        className="w-28"
                       />
-                      <th className="w-10" />
                     </tr>
                   </thead>
                   <tbody>
@@ -455,10 +388,6 @@ export default function ReleasesPage() {
                       <ReleaseRow
                         key={release.id}
                         release={release}
-                        onPurge={handlePurge}
-                        purging={purgingId === release.id}
-                        onToggleIgnore={handleToggleIgnore}
-                        togglingIgnore={togglingIgnoreId === release.id}
                       />
                     ))}
                   </tbody>
@@ -510,18 +439,9 @@ function SortableTh({
 
 function ReleaseRow({
   release,
-  onPurge,
-  purging,
-  onToggleIgnore,
-  togglingIgnore,
 }: {
   release: ReleaseWithMeta;
-  onPurge: (release: ReleaseWithMeta) => void;
-  purging: boolean;
-  onToggleIgnore: (release: ReleaseWithMeta) => void;
-  togglingIgnore: boolean;
 }) {
-  const { platform: p, releaseType: rt } = parseReleaseName(release.name);
   const date = relativeDate(release.releaseDate, release.released);
 
   return (
@@ -539,16 +459,6 @@ function ReleaseRow({
           >
             {release.name}
           </span>
-          {p && (
-            <span className="inline-flex items-center text-[10px] font-medium px-1.5 h-4 rounded bg-muted text-muted-foreground shrink-0">
-              {p}
-            </span>
-          )}
-          {rt && (
-            <span className="inline-flex items-center text-[10px] font-medium px-1.5 h-4 rounded bg-muted text-muted-foreground shrink-0">
-              {rt}
-            </span>
-          )}
         </Link>
       </td>
 
@@ -587,42 +497,6 @@ function ReleaseRow({
 
       <td className="px-3 py-2.5">
         <StatusBadge release={release} />
-      </td>
-
-      <td className="px-2 py-2.5 text-right">
-        {release.deletedAt ? (
-          <button
-            type="button"
-            onClick={() => onPurge(release)}
-            disabled={purging}
-            title="Purge release — deletes it from this app and removes associated Google Tasks / Calendar events"
-            className="inline-flex items-center gap-1 h-6 px-2 rounded text-[11px] font-medium text-red-700 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-60"
-          >
-            {purging ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Trash2 className="h-3 w-3" />
-            )}
-            Purge
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onToggleIgnore(release)}
-            disabled={togglingIgnore}
-            title={release.ignored ? "Unignore — resume automation" : "Ignore — hide and skip automation"}
-            className="inline-flex items-center gap-1 h-6 px-2 rounded text-[11px] font-medium text-muted-foreground hover:bg-muted disabled:opacity-60"
-          >
-            {togglingIgnore ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : release.ignored ? (
-              <Eye className="h-3 w-3" />
-            ) : (
-              <EyeOff className="h-3 w-3" />
-            )}
-            {release.ignored ? "Unignore" : "Ignore"}
-          </button>
-        )}
       </td>
     </tr>
   );
@@ -665,13 +539,28 @@ function SyncCell({ summary }: { summary: SyncSummary }) {
   }
 
   const needsAttention = summary.failed + summary.missing;
-  const hasIssues = needsAttention > 0 || summary.drifted > 0;
   const allSynced = summary.synced === tracked;
+  const allPending = summary.pending === tracked;
+
+  // Pick the single dominant color for the label
+  const labelColor = allSynced
+    ? "text-green-700 dark:text-green-400"
+    : needsAttention > 0
+    ? "text-red-600 dark:text-red-400"
+    : summary.drifted > 0
+    ? "text-amber-700 dark:text-amber-400"
+    : "text-muted-foreground";
+
+  // Build a concise label
+  const label = allSynced
+    ? `${summary.synced} synced`
+    : allPending
+    ? `${summary.pending} pending`
+    : `${summary.synced}/${tracked}`;
 
   return (
-    <div className="flex items-center gap-2 min-w-0">
-      {/* Stacked status bar: green=synced, amber=drifted, red=failed/missing, muted=pending */}
-      <div className="flex h-1.5 w-20 rounded-full bg-muted overflow-hidden shrink-0">
+    <div className="flex flex-col gap-1">
+      <div className="flex h-1.5 w-full rounded-full bg-muted overflow-hidden">
         {summary.synced > 0 && (
           <div
             className="h-full bg-green-500"
@@ -691,41 +580,9 @@ function SyncCell({ summary }: { summary: SyncSummary }) {
           />
         )}
       </div>
-      <div className="flex items-center gap-1.5 text-xs tabular-nums min-w-0">
-        {allSynced ? (
-          <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
-            <CheckCircle2 className="h-3 w-3" />
-            {summary.synced}
-          </span>
-        ) : (
-          <>
-            {summary.failed > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-red-600 dark:text-red-400">
-                <XCircle className="h-3 w-3" />
-                {summary.failed}
-              </span>
-            )}
-            {summary.missing > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-red-600 dark:text-red-400">
-                <Ghost className="h-3 w-3" />
-                {summary.missing}
-              </span>
-            )}
-            {summary.drifted > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-amber-700 dark:text-amber-400">
-                <AlertTriangle className="h-3 w-3" />
-                {summary.drifted}
-              </span>
-            )}
-            {!hasIssues && summary.pending > 0 && (
-              <span className="text-muted-foreground">{summary.pending} pending</span>
-            )}
-            <span className="text-muted-foreground/70">
-              {summary.synced}/{tracked}
-            </span>
-          </>
-        )}
-      </div>
+      <span className={cn("text-[10px] tabular-nums", labelColor)}>
+        {label}
+      </span>
     </div>
   );
 }
@@ -733,7 +590,7 @@ function SyncCell({ summary }: { summary: SyncSummary }) {
 function StatusBadge({ release }: { release: ReleaseWithMeta }) {
   if (release.deletedAt) {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-red-500/10 text-red-700 dark:text-red-400">
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded whitespace-nowrap bg-red-500/10 text-red-700 dark:text-red-400">
         <Trash2 className="h-3 w-3" />
         Deleted in Jira
       </span>
@@ -741,7 +598,7 @@ function StatusBadge({ release }: { release: ReleaseWithMeta }) {
   }
   if (release.archived) {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded border text-muted-foreground">
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded whitespace-nowrap border text-muted-foreground">
         <Archive className="h-3 w-3" />
         Archived
       </span>
@@ -749,7 +606,7 @@ function StatusBadge({ release }: { release: ReleaseWithMeta }) {
   }
   if (release.released) {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-green-500/10 text-green-700 dark:text-green-400">
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded whitespace-nowrap bg-green-500/10 text-green-700 dark:text-green-400">
         <CheckCircle2 className="h-3 w-3" />
         Released
       </span>
@@ -759,7 +616,7 @@ function StatusBadge({ release }: { release: ReleaseWithMeta }) {
   // actionable — you need to click something before tasks will fire.
   if (release.approvalStatus === "pending") {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-400">
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded whitespace-nowrap bg-amber-500/10 text-amber-700 dark:text-amber-400">
         <Clock className="h-3 w-3" />
         Awaiting approval
       </span>
@@ -767,14 +624,14 @@ function StatusBadge({ release }: { release: ReleaseWithMeta }) {
   }
   if (release.approvalStatus === "cancelled") {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-red-500/10 text-red-700 dark:text-red-400">
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded whitespace-nowrap bg-red-500/10 text-red-700 dark:text-red-400">
         <XCircle className="h-3 w-3" />
         Cancelled
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded bg-blue-500/10 text-blue-700 dark:text-blue-400">
+    <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded whitespace-nowrap bg-blue-500/10 text-blue-700 dark:text-blue-400">
       Active
     </span>
   );
