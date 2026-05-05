@@ -14,6 +14,7 @@ import {
   Workflow,
   Tags,
   Library,
+  FolderOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTicketData } from "@/lib/ticket-data-context";
@@ -124,6 +125,14 @@ export function AppNav({
     },
   ];
 
+  const groups2: NavGroup[] = [
+    ...groups,
+    {
+      label: "Tools",
+      items: [{ href: "/files", label: "Files", icon: FolderOpen }],
+    },
+  ];
+
   const footer: NavItem[] = [
     { href: "/settings", label: "Settings", icon: Settings },
   ];
@@ -159,7 +168,7 @@ export function AppNav({
       </div>
 
       <div className="flex-1 overflow-y-auto py-2">
-        {groups.map((group) => (
+        {groups2.map((group) => (
           <div key={group.label} className="mb-3">
             {!collapsed && (
               <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">

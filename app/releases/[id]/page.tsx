@@ -7,7 +7,6 @@ import {
   Loader2,
   RefreshCw,
   Calendar,
-  Package,
   ExternalLink,
   AlertTriangle,
   Trash2,
@@ -24,6 +23,7 @@ import {
   AlertOctagon,
   RefreshCcw,
   ShieldAlert,
+  ChevronDown,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from "@/components/ui/collapsible";
 import { parseReleaseName } from "@/lib/releases/matcher";
 import { cn } from "@/lib/utils";
 import type {
@@ -412,13 +418,16 @@ export default function ReleasePage() {
   const parsed = release ? parseReleaseName(release.name) : null;
   const groups = useMemo(() => groupByPhase(instances), [instances]);
 
-  // Count pending dispatches that are rebuilt on regenerate (used in the dialog).
   const pendingRegenCount = useMemo(
     () => instances.filter((i) => i.syncState === "pending" || i.syncState === "failed").length,
     [instances],
   );
   const syncedKeepCount = useMemo(
     () => instances.filter((i) => i.syncState === "synced" || i.syncState === "drifted").length,
+    [instances],
+  );
+  const problemCount = useMemo(
+    () => instances.filter((i) => i.syncState === "failed" || i.syncState === "missing" || i.syncState === "drifted").length,
     [instances],
   );
 
@@ -446,96 +455,169 @@ export default function ReleasePage() {
     ? `${process.env.NEXT_PUBLIC_JIRA_URL}/projects/IST/versions/${release.id}`
     : null;
 
-  const actions = (
-    <div className="ml-auto flex items-center gap-1">
-      {jiraUrl && (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <a
-                href={jiraUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 h-7 px-2 text-xs rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              />
-            }
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-            Edit in Jira
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
-            Open this release&apos;s version page in Jira. Jira is the source of
-            truth — changes there flow back via webhook and cascade to Google.
-          </TooltipContent>
-        </Tooltip>
-      )}
-      {!release.deletedAt && (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs gap-1.5 text-muted-foreground"
-                onClick={handleRefreshSync}
-                disabled={refreshing}
-              />
-            }
-          >
-            <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
-            Refresh sync
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
-            Re-checks each row against Google Tasks and Google Calendar to catch
-            events that were deleted, moved, or re-dated. Read-only — doesn&apos;t
-            change anything in Google.
-          </TooltipContent>
-        </Tooltip>
-      )}
-      {workflow && !release.deletedAt && (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs gap-1.5 text-muted-foreground"
-                onClick={() => setRegenOpen(true)}
-                disabled={regenerating}
-              />
-            }
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Rebuild
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
-            Rebuilds the checklist from the current workflow. Rows already
-            created in Google are kept; undispatched rows are replaced.
-          </TooltipContent>
-        </Tooltip>
-      )}
-      {release.deletedAt && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 text-xs gap-1.5 text-red-700 dark:text-red-400 hover:bg-red-500/10"
-          onClick={handlePurge}
-          disabled={purging}
-        >
-          {purging ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Trash2 className="h-3.5 w-3.5" />
-          )}
-          Purge
-        </Button>
-      )}
-    </div>
-  );
-
   return (
-    <AppShell title={<span className="font-mono">{release.name}</span>} actions={actions}>
-      <main className="max-w-5xl mx-auto px-6 py-6 space-y-6">
+    <AppShell title={<span className="font-mono">{release.name}</span>}>
+      <main className="max-w-5xl mx-auto px-6 py-6 space-y-4">
+        {/* Sync summary hero — the most important number on the page */}
+        {syncSummary && syncSummary.total > 0 && (
+          <SyncSummaryCard summary={syncSummary} />
+        )}
+
+        {/* Metadata line — badges, date, workflow on a single row */}
+        <div className="flex items-center gap-1.5 flex-wrap text-xs text-muted-foreground">
+          {parsed?.platform && (
+            <Badge variant="secondary" className="text-xs h-5 px-1.5">
+              {parsed.platform}
+            </Badge>
+          )}
+          {parsed?.releaseType && (
+            <Badge variant="secondary" className="text-xs h-5 px-1.5">
+              {parsed.releaseType}
+            </Badge>
+          )}
+          {release.released && (
+            <Badge variant="secondary" className="text-xs h-5 px-1.5">Released</Badge>
+          )}
+          {release.archived && (
+            <Badge variant="outline" className="text-xs h-5 px-1.5">Archived</Badge>
+          )}
+          {release.releaseDate && (
+            <>
+              <span className="text-muted-foreground/40">·</span>
+              <span className="inline-flex items-center gap-1 tabular-nums">
+                <Calendar className="h-3 w-3" />
+                {formatShortDate(release.releaseDate)}
+              </span>
+            </>
+          )}
+          {workflow ? (
+            <>
+              <span className="text-muted-foreground/40">·</span>
+              <span>
+                Workflow:{" "}
+                <Link
+                  href={`/releases/workflows/${workflow.id}`}
+                  className="text-foreground font-medium hover:underline"
+                >
+                  {workflow.name}
+                </Link>
+                {category && (
+                  <span className="ml-1 text-muted-foreground/80">
+                    ({category.key})
+                  </span>
+                )}
+              </span>
+            </>
+          ) : release.categoryId ? (
+            <>
+              <span className="text-muted-foreground/40">·</span>
+              <span>
+                Category{" "}
+                <span className="text-foreground font-medium">
+                  {category?.key ?? release.categoryId}
+                </span>
+                {" — "}
+                <Link href="/releases/categories" className="hover:underline text-foreground">
+                  assign workflow
+                </Link>
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-muted-foreground/40">·</span>
+              <span>
+                No category —{" "}
+                <Link href="/releases/categories" className="hover:underline text-foreground">
+                  manage categories
+                </Link>
+              </span>
+            </>
+          )}
+        </div>
+
+        {/* Description */}
+        {release.description && (
+          <p className="text-sm text-muted-foreground">{release.description}</p>
+        )}
+
+        {/* Actions row — relocated from toolbar */}
+        <div className="flex items-center gap-2">
+          {jiraUrl && (
+            <a
+              href={jiraUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-medium rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Edit in Jira
+            </a>
+          )}
+          {!release.deletedAt && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs gap-1.5 text-muted-foreground"
+                    onClick={handleRefreshSync}
+                    disabled={refreshing}
+                  />
+                }
+              >
+                <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
+                Refresh sync
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
+                Re-checks each row against Google to catch events that were
+                deleted, moved, or re-dated. Read-only.
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {workflow && !release.deletedAt && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs gap-1.5 text-muted-foreground"
+                    onClick={() => setRegenOpen(true)}
+                    disabled={regenerating}
+                  />
+                }
+              >
+                <RotateCcw className="h-3 w-3" />
+                Rebuild
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-xs text-xs leading-snug">
+                Rebuilds the checklist from the current workflow. Rows already
+                in Google are kept; undispatched rows are replaced.
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {release.deletedAt && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs gap-1.5 text-red-700 dark:text-red-400 hover:bg-red-500/10"
+              onClick={handlePurge}
+              disabled={purging}
+            >
+              {purging ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Trash2 className="h-3 w-3" />
+              )}
+              Purge
+            </Button>
+          )}
+        </div>
+
+        <Separator />
+
+        {/* Banners — contextual alerts between header and content */}
         {release.deletedAt && (
           <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 flex items-start gap-2 text-sm">
             <Trash2 className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5 shrink-0" />
@@ -546,17 +628,12 @@ export default function ReleasePage() {
               <p className="text-xs text-muted-foreground">
                 This release was deleted in Jira on{" "}
                 {release.deletedAt.slice(0, 10)}. Task history is kept until you
-                click <span className="font-medium">Purge</span>, which removes
-                the release from this app and attempts to delete any associated
-                Google Tasks / Calendar events.
+                click <span className="font-medium">Purge</span>.
               </p>
             </div>
           </div>
         )}
 
-        {/* Resolution banner — release is frozen pending admin choice because
-            its category changed after tasks existed. Displaces the task list
-            with a three-card decision UI driven by the snapshot. */}
         {release.resolutionRequired &&
           release.resolutionSnapshot &&
           !release.deletedAt && (
@@ -567,23 +644,18 @@ export default function ReleasePage() {
                   Resolution required — category changed
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Jira renamed this release from a <code className="bg-muted px-1 rounded">{release.resolutionSnapshot.oldCategoryKey ?? "?"}</code>{" "}
-                  release into{" "}
+                  Jira renamed this release from{" "}
+                  <code className="bg-muted px-1 rounded">{release.resolutionSnapshot.oldCategoryKey ?? "?"}</code>{" "}
+                  to{" "}
                   <code className="bg-muted px-1 rounded">
                     {release.resolutionSnapshot.newCategoryKey ?? "unmatched"}
                   </code>
-                  . All task generation, dispatch, and notifications are frozen
-                  until you pick a path below.
+                  . All task activity is frozen until you choose a resolution below.
                 </p>
               </div>
             </div>
           )}
 
-        {/* Unmatched banner — prominent alert when the release isn't wired to a
-            workflow. Two distinct causes: no category parsed, or category has
-            no workflow assigned. Only show when not deleted, not pending
-            resolution (the resolution banner takes precedence), and not
-            already released. */}
         {!release.resolutionRequired &&
           !release.deletedAt &&
           !release.released &&
@@ -597,16 +669,14 @@ export default function ReleasePage() {
                       Unmatched — name didn&apos;t parse
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Expected <code className="bg-muted px-1 rounded">platform@x.y.z</code>.
-                      Until the Jira version name parses into one of the{" "}
+                      Expected <code className="bg-muted px-1 rounded">platform@x.y.z</code>.{" "}
                       <Link
                         href="/releases/categories"
                         className="underline hover:text-foreground"
                       >
-                        configured categories
-                      </Link>
-                      , no tasks, notifications, or approvals fire for this
-                      release.
+                        Configure categories
+                      </Link>{" "}
+                      to enable automation.
                     </p>
                   </>
                 ) : (
@@ -619,15 +689,13 @@ export default function ReleasePage() {
                       has no workflow
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Assign one on the{" "}
                       <Link
                         href="/releases/categories"
                         className="underline hover:text-foreground"
                       >
-                        categories page
-                      </Link>
-                      . Until then, no tasks, notifications, or approvals fire
-                      for this release.
+                        Assign a workflow
+                      </Link>{" "}
+                      to enable task generation.
                     </p>
                   </>
                 )}
@@ -635,10 +703,6 @@ export default function ReleasePage() {
             </div>
           )}
 
-        {/* Approval banner — pending, approved (recently), or cancelled.
-            Pending is actionable and shows Approve/Cancel buttons as a
-            fallback for when the Slack interactive path fails. Approved and
-            cancelled are passive state reminders. */}
         {release.approvalStatus === "pending" &&
           !release.resolutionRequired &&
           !release.deletedAt && (
@@ -649,9 +713,7 @@ export default function ReleasePage() {
                 Awaiting approval
               </p>
               <p className="text-xs text-muted-foreground">
-                Tasks are materialized but won&apos;t dispatch to Google until
-                someone approves. Check Slack for the interactive message — or
-                approve directly from here if Slack isn&apos;t available.
+                Tasks won&apos;t dispatch to Google until approved.
               </p>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
@@ -692,8 +754,7 @@ export default function ReleasePage() {
             <div className="flex-1 space-y-0.5">
               <p className="font-medium text-foreground">Approval cancelled</p>
               <p className="text-xs text-muted-foreground">
-                Tasks were not dispatched. To run them, click{" "}
-                <span className="font-medium">Approve</span>.
+                Tasks were not dispatched.
               </p>
             </div>
             <Button
@@ -712,78 +773,7 @@ export default function ReleasePage() {
           </div>
         )}
 
-        {/* Header: meta + sync summary */}
-        <section className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-start">
-          <div className="space-y-2 min-w-0">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {parsed?.platform && (
-                <Badge variant="secondary" className="text-xs h-5 px-1.5">
-                  {parsed.platform}
-                </Badge>
-              )}
-              {parsed?.releaseType && (
-                <Badge variant="secondary" className="text-xs h-5 px-1.5">
-                  {parsed.releaseType}
-                </Badge>
-              )}
-              {release.released && <Badge variant="secondary" className="text-xs h-5 px-1.5">Released</Badge>}
-              {release.archived && <Badge variant="outline" className="text-xs h-5 px-1.5">Archived</Badge>}
-              {release.releaseDate && (
-                <span className="text-xs text-muted-foreground inline-flex items-center gap-1 tabular-nums">
-                  <Calendar className="h-3 w-3" />
-                  {formatShortDate(release.releaseDate)}
-                </span>
-              )}
-            </div>
-            {release.description && (
-              <p className="text-sm text-muted-foreground">{release.description}</p>
-            )}
-            <div className="flex items-center gap-2 text-sm">
-              <Package className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              {!release.categoryId ? (
-                <span className="text-muted-foreground">
-                  No category matched —{" "}
-                  <Link href="/releases/categories" className="hover:underline text-foreground">
-                    manage categories
-                  </Link>
-                </span>
-              ) : !workflow ? (
-                <span className="text-muted-foreground">
-                  Category{" "}
-                  <span className="text-foreground font-medium">
-                    {category?.key ?? release.categoryId}
-                  </span>{" "}
-                  has no workflow —{" "}
-                  <Link href="/releases/categories" className="hover:underline text-foreground">
-                    assign one
-                  </Link>
-                </span>
-              ) : (
-                <span className="text-muted-foreground">
-                  Workflow:{" "}
-                  <Link
-                    href={`/releases/workflows/${workflow.id}`}
-                    className="text-foreground font-medium hover:underline"
-                  >
-                    {workflow.name}
-                  </Link>
-                  {category && (
-                    <span className="ml-2 text-xs text-muted-foreground/80">
-                      ({category.key})
-                    </span>
-                  )}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {syncSummary && syncSummary.total > 0 && (
-            <SyncSummaryCard summary={syncSummary} />
-          )}
-        </section>
-
-        {/* Resolution cards — shown instead of the task list while resolution
-            is required. Three choices driven by the snapshot. */}
+        {/* Content area — resolution cards, task list, or empty state */}
         {release.resolutionRequired && release.resolutionSnapshot && !release.deletedAt ? (
           <ResolutionCards
             snapshot={release.resolutionSnapshot}
@@ -791,34 +781,45 @@ export default function ReleasePage() {
             error={resolveError}
             onResolve={handleResolve}
           />
-        ) : /* Tasks grouped by phase */
-        groups.length > 0 ? (
-          <div className="space-y-5">
+        ) : groups.length > 0 ? (
+          <div className="space-y-4">
+            {problemCount > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {problemCount} task{problemCount !== 1 ? "s" : ""} need{problemCount === 1 ? "s" : ""} attention
+              </p>
+            )}
             {groups.map((group) => (
-              <section key={group.key} className="space-y-2">
-                <div className="flex items-baseline justify-between">
-                  <div>
-                    <h2 className="text-sm font-semibold">{group.title}</h2>
-                    <p className="text-xxs text-muted-foreground">{group.subtitle}</p>
-                  </div>
-                  <span className="text-xxs text-muted-foreground tabular-nums">
-                    {group.items.length}
-                  </span>
+              <Collapsible key={group.key} defaultOpen>
+                <div className="space-y-2">
+                  <CollapsibleTrigger className="flex items-baseline justify-between w-full group cursor-pointer">
+                    <div className="text-left">
+                      <h2 className="text-sm font-semibold">{group.title}</h2>
+                      <p className="text-xxs text-muted-foreground">{group.subtitle}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xxs text-muted-foreground tabular-nums">
+                        {group.items.length}
+                      </span>
+                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform group-data-[panel-open]:rotate-180" />
+                    </div>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div className="rounded-lg border divide-y overflow-hidden">
+                      {group.items.map((instance) => (
+                        <TaskRow
+                          key={instance.id}
+                          instance={instance}
+                          retrying={retryingId === instance.id}
+                          pushing={pushingId === instance.id}
+                          rowError={rowErrors[instance.id]}
+                          onRetry={() => handleRetry(instance)}
+                          onPushToGoogle={() => handlePushToGoogle(instance)}
+                        />
+                      ))}
+                    </div>
+                  </CollapsibleContent>
                 </div>
-                <div className="rounded-lg border divide-y overflow-hidden">
-                  {group.items.map((instance) => (
-                    <TaskRow
-                      key={instance.id}
-                      instance={instance}
-                      retrying={retryingId === instance.id}
-                      pushing={pushingId === instance.id}
-                      rowError={rowErrors[instance.id]}
-                      onRetry={() => handleRetry(instance)}
-                      onPushToGoogle={() => handlePushToGoogle(instance)}
-                    />
-                  ))}
-                </div>
-              </section>
+              </Collapsible>
             ))}
           </div>
         ) : workflow ? (
@@ -873,8 +874,7 @@ export default function ReleasePage() {
               <span className="font-medium text-foreground">
                 {workflow?.name ?? "assigned"}
               </span>{" "}
-              workflow. Useful after a workflow changes, or to reset rows that
-              got into a bad state.
+              workflow.
             </DialogDescription>
           </DialogHeader>
 
@@ -902,17 +902,11 @@ export default function ReleasePage() {
                   <span className="font-medium tabular-nums">{expectedTaskCount}</span>{" "}
                   fresh row{expectedTaskCount === 1 ? "" : "s"} from workflow{" "}
                   <span className="text-muted-foreground">
-                    — created and dispatched to Google automatically
+                    — created and dispatched automatically
                   </span>
                 </div>
               </div>
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Existing Google Tasks and Calendar events aren&apos;t touched —
-              only this app&apos;s checklist. If you want to remove a Google
-              item, delete it in Google and click{" "}
-              <span className="font-medium text-foreground">Refresh sync</span>.
-            </p>
           </div>
 
           <DialogFooter>
@@ -1251,28 +1245,25 @@ function SyncSummaryCard({ summary }: { summary: SyncSummary }) {
   ].filter(Boolean) as { n: number; label: string; bad: boolean }[];
 
   return (
-    <div className="flex items-baseline gap-3 min-w-[200px] justify-end">
-      <div className="text-right">
-        <div className="text-2xl font-semibold tabular-nums leading-none">
+    <div className="flex items-baseline gap-3 flex-wrap">
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-3xl font-semibold tabular-nums leading-none">
           {summary.synced}
-          <span className="text-muted-foreground/60 text-lg font-normal">
-            {" "}/ {tracked}
-          </span>
-        </div>
-        <div className="text-xs text-muted-foreground mt-1">synced</div>
+        </span>
+        <span className="text-lg text-muted-foreground font-normal">
+          / {tracked} synced
+        </span>
       </div>
       {issues.length > 0 && (
-        <div className="border-l pl-3 text-xs text-muted-foreground space-y-0.5">
+        <div className="flex items-center gap-1.5">
           {issues.map((i) => (
-            <div
+            <Badge
               key={i.label}
-              className={cn(
-                "tabular-nums",
-                i.bad && "text-red-600 dark:text-red-500",
-              )}
+              variant={i.bad ? "destructive" : "secondary"}
+              className="text-xs h-5 px-1.5 tabular-nums"
             >
               {i.n} {i.label}
-            </div>
+            </Badge>
           ))}
         </div>
       )}

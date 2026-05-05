@@ -20,6 +20,7 @@ interface ReleaseRow {
   jira_raw: string;
   received_at: string;
   updated_at: string;
+  ignored: number;
   category_id: string | null;
   resolution_required: number;
   resolution_reason: string | null;
@@ -62,6 +63,7 @@ function rowToRelease(row: ReleaseRow): Release {
     receivedAt: row.received_at,
     updatedAt: row.updated_at,
 
+    ignored: row.ignored === 1,
     categoryId: row.category_id,
     resolutionRequired: row.resolution_required === 1,
     resolutionReason: (row.resolution_reason as ResolutionReason | null) ?? null,
@@ -145,6 +147,32 @@ export async function clearApproval(id: string): Promise<void> {
             updated_at = ?
       WHERE id = ?`,
     [now, id],
+  );
+}
+
+// ─── Ignored flag ────────────────────────────────────────────────────────────
+
+export async function setReleaseIgnored(
+  id: string,
+  ignored: boolean,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await d1Query(
+    `UPDATE releases SET ignored = ?, updated_at = ? WHERE id = ?`,
+    [ignored ? 1 : 0, now, id],
+  );
+}
+
+export async function bulkSetReleasesIgnored(
+  ids: string[],
+  ignored: boolean,
+): Promise<void> {
+  if (ids.length === 0) return;
+  const now = new Date().toISOString();
+  const placeholders = ids.map(() => "?").join(",");
+  await d1Query(
+    `UPDATE releases SET ignored = ?, updated_at = ? WHERE id IN (${placeholders})`,
+    [ignored ? 1 : 0, now, ...ids],
   );
 }
 

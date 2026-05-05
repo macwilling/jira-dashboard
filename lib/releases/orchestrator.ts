@@ -102,9 +102,8 @@ export async function handleVersionEvent(
   const dateChanged =
     !!previous && previous.releaseDate !== release.releaseDate;
 
-  // ── 3. Respect soft-delete and existing resolution freeze ──────────────────
-  if (release.deletedAt) {
-    await fireLifecycleNotifications(release, previous, webhookEvent);
+  // ── 3. Respect soft-delete, ignored, and existing resolution freeze ────────
+  if (release.deletedAt || release.ignored) {
     return { action: "upserted", id, event: webhookEvent };
   }
   if (release.resolutionRequired) {

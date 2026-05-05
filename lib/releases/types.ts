@@ -63,6 +63,8 @@ export interface Release {
   receivedAt: string;
   updatedAt: string;
 
+  /** App-side flag. Ignored releases are hidden from the UI and skipped by the orchestrator. */
+  ignored: boolean;
   /** Resolved category ID, or null if the release name didn't match any category. */
   categoryId: string | null;
   /** True while the release is frozen awaiting admin resolution. */
