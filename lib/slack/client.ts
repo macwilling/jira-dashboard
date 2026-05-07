@@ -131,6 +131,18 @@ export async function updateSlackMessage(args: UpdateMessageArgs): Promise<void>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// views.open — opens a modal triggered by a slash command or shortcut
+
+export async function openSlackModal(
+  triggerId: string,
+  view: unknown,
+): Promise<void> {
+  await slackFetch<SlackApiResponse>("views.open", {
+    body: { trigger_id: triggerId, view },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // auth.test
 
 export interface AuthTestResult {
