@@ -206,6 +206,103 @@ export async function fetchChangelog(issueKey: string): Promise<JiraChangelogRes
   );
 }
 
+export interface CreateIssueParams {
+  projectKey: string;
+  issueType: string;
+  summary: string;
+  description?: AdfDoc;
+  labels?: string[];
+}
+
+export interface CreateIssueResult {
+  id: string;
+  key: string;
+  self: string;
+}
+
+interface AdfTextNode {
+  type: "text";
+  text: string;
+  marks?: Array<{ type: string; attrs?: Record<string, string> }>;
+}
+
+interface AdfParagraph {
+  type: "paragraph";
+  content: AdfTextNode[];
+}
+
+interface AdfHeading {
+  type: "heading";
+  attrs: { level: number };
+  content: AdfTextNode[];
+}
+
+export interface AdfDoc {
+  type: "doc";
+  version: 1;
+  content: Array<AdfParagraph | AdfHeading>;
+}
+
+export function adfDoc(blocks: Array<AdfParagraph | AdfHeading>): AdfDoc {
+  return { type: "doc", version: 1, content: blocks };
+}
+
+export function adfParagraph(text: string): AdfParagraph {
+  return { type: "paragraph", content: [{ type: "text", text }] };
+}
+
+export function adfHeading(text: string, level = 3): AdfHeading {
+  return { type: "heading", attrs: { level }, content: [{ type: "text", text }] };
+}
+
+export function adfParagraphWithLink(
+  linkText: string,
+  href: string,
+  suffix?: string,
+): AdfParagraph {
+  const content: AdfTextNode[] = [
+    {
+      type: "text",
+      text: linkText,
+      marks: [{ type: "link", attrs: { href } }],
+    },
+  ];
+  if (suffix) content.push({ type: "text", text: suffix });
+  return { type: "paragraph", content };
+}
+
+export async function createIssue(
+  params: CreateIssueParams,
+): Promise<CreateIssueResult> {
+  const creds = getCredentials();
+  if (!creds) throw new Error("Jira credentials not configured");
+
+  const fields: Record<string, unknown> = {
+    project: { key: params.projectKey },
+    issuetype: { name: params.issueType },
+    summary: params.summary,
+    labels: params.labels ?? [],
+  };
+  if (params.description) fields.description = params.description;
+
+  const res = await fetch(`${creds.baseUrl}/rest/api/3/issue`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${creds.auth}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ fields }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Jira createIssue failed ${res.status}: ${text.slice(0, 300)}`);
+  }
+
+  return res.json() as Promise<CreateIssueResult>;
+}
+
 export async function testConnection(): Promise<{
   ok: boolean;
   error?: string;

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifySlackSignature } from "@/lib/slack/signing";
 import { updateSlackMessage } from "@/lib/slack/client";
+import { handleSupportViewSubmission } from "@/lib/slack/support-handlers";
+import { CB_REQUEST_TYPE, CB_TICKET_SYNC_CG_GATE, CB_TICKET_SYNC_DETAILS, CB_BUG_REPORT } from "@/lib/slack/support-modals";
 import {
   getRelease,
   setApprovalApproved,
@@ -53,6 +55,16 @@ interface SlackInteractivePayload {
   message?: { ts?: string };
   actions?: Array<{ action_id?: string; value?: string }>;
   response_url?: string;
+  view?: {
+    id?: string;
+    callback_id?: string;
+    state?: {
+      values?: Record<
+        string,
+        Record<string, { value?: string | null; selected_option?: { value: string } | null }>
+      >;
+    };
+  };
 }
 
 function getAbsoluteUrl(req: NextRequest, path: string): string {
@@ -112,6 +124,21 @@ export async function POST(req: NextRequest) {
     payload = JSON.parse(payloadStr) as SlackInteractivePayload;
   } catch {
     return NextResponse.json({ error: "invalid payload" }, { status: 400 });
+  }
+
+  // Route view_submission payloads (modal form submissions) to support handlers.
+  const supportCallbacks = new Set([
+    CB_REQUEST_TYPE,
+    CB_TICKET_SYNC_CG_GATE,
+    CB_TICKET_SYNC_DETAILS,
+    CB_BUG_REPORT,
+  ]);
+  if (
+    payload.type === "view_submission" &&
+    payload.view?.callback_id &&
+    supportCallbacks.has(payload.view.callback_id)
+  ) {
+    return handleSupportViewSubmission(payload);
   }
 
   const action = payload.actions?.[0];
