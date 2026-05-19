@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import useSWR from "swr";
-import { RefreshCw, GitPullRequest } from "lucide-react";
+import { RefreshCw, GitMerge } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { HeatmapView } from "@/components/github/HeatmapView";
 import { ByContributorView } from "@/components/github/ByContributorView";
@@ -11,6 +11,7 @@ import { PRStats } from "@/lib/github/types";
 import { cn } from "@/lib/utils";
 
 type View = "heatmap" | "contributor" | "time";
+
 const VIEWS: { id: View; label: string }[] = [
   { id: "contributor", label: "by contributor" },
   { id: "time", label: "over time" },
@@ -52,17 +53,18 @@ export default function GitHubPage() {
       disabled={isLoading || refreshing}
       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-40"
     >
-      <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+      <RefreshCw className={cn("h-3.5 w-3.5", (refreshing || isLoading) && "animate-spin")} />
       Refresh
     </button>
   );
 
   return (
     <AppShell title="GitHub" actions={actions}>
-      <div className="p-6 max-w-full">
-        {/* Stats header */}
+      <div className="p-6 space-y-6 max-w-full">
+
+        {/* Stats */}
         {data && (
-          <div className="flex gap-6 mb-6">
+          <div className="flex gap-3">
             <StatCard label="total PRs" value={data.totalPRs} />
             <StatCard label="contributors" value={data.contributors.length} />
             <StatCard label="active days" value={data.activeDays} />
@@ -70,37 +72,37 @@ export default function GitHubPage() {
         )}
 
         {/* Controls */}
-        <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
-          {/* View toggle */}
-          <div className="flex items-center gap-1">
-            <span className="text-xs text-muted-foreground mr-1">View:</span>
-            {VIEWS.map(({ id, label }) => (
-              <button
-                key={id}
-                onClick={() => setView(id)}
-                className={cn(
-                  "h-7 px-3 rounded-full text-xs font-medium border transition-colors",
-                  view === id
-                    ? "bg-foreground text-background border-foreground"
-                    : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/40"
-                )}
-              >
-                {label}
-              </button>
-            ))}
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-2.5">
+            <span className="text-[11px] text-muted-foreground/50 font-mono shrink-0">View:</span>
+            <div className="flex items-center p-[3px] rounded-lg bg-muted/30 border border-border/50 gap-px">
+              {VIEWS.map(({ id, label }) => (
+                <button
+                  key={id}
+                  onClick={() => setView(id)}
+                  className={cn(
+                    "h-6 px-3 rounded-md text-xs font-medium transition-all",
+                    view === id
+                      ? "bg-background text-foreground shadow-sm border border-border/60"
+                      : "text-muted-foreground/60 hover:text-muted-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* Day range selector */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-px p-[3px] rounded-lg bg-muted/30 border border-border/50">
             {DAY_OPTIONS.map((d) => (
               <button
                 key={d}
                 onClick={() => setDays(d)}
                 className={cn(
-                  "h-7 px-2.5 rounded-md text-xs font-medium transition-colors",
+                  "h-6 min-w-[34px] px-2 rounded-md text-[11px] font-mono transition-all",
                   days === d
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                    ? "bg-background text-foreground shadow-sm border border-border/60"
+                    : "text-muted-foreground/50 hover:text-muted-foreground"
                 )}
               >
                 {d}d
@@ -109,36 +111,44 @@ export default function GitHubPage() {
           </div>
         </div>
 
-        {/* Content */}
+        {/* States */}
         {isLoading && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground py-12 justify-center">
-            <RefreshCw className="h-4 w-4 animate-spin" />
-            Loading PR data…
+          <div className="flex items-center gap-2.5 py-20 justify-center">
+            <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground/30" />
+            <span className="text-[11px] font-mono text-muted-foreground/30 tracking-wide">
+              fetching pull requests
+            </span>
           </div>
         )}
 
         {error && (
-          <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive max-w-lg">
-            <p className="font-medium mb-1">Failed to load GitHub data</p>
-            <p className="text-xs opacity-80">{error.message}</p>
+          <div className="rounded-lg border border-border bg-muted/10 p-4 max-w-md">
+            <p className="text-xs font-medium text-foreground/80 mb-1">Failed to load</p>
+            <p className="text-[11px] font-mono text-muted-foreground">{error.message}</p>
             {error.message.includes("GITHUB_TOKEN") && (
-              <p className="text-xs mt-2 opacity-70">
-                Add <code className="font-mono">GITHUB_TOKEN</code> to your{" "}
-                <code className="font-mono">.env.local</code> file.
+              <p className="text-[11px] text-muted-foreground/60 mt-2">
+                Add{" "}
+                <code className="font-mono bg-muted/50 px-1 py-0.5 rounded text-[10px]">
+                  GITHUB_TOKEN
+                </code>{" "}
+                to your{" "}
+                <code className="font-mono bg-muted/50 px-1 py-0.5 rounded text-[10px]">
+                  .env.local
+                </code>
               </p>
             )}
           </div>
         )}
 
-        {!isLoading && !error && data && data.totalPRs === 0 && (
-          <div className="flex flex-col items-center gap-2 py-16 text-muted-foreground">
-            <GitPullRequest className="h-8 w-8 opacity-30" />
-            <p className="text-sm">No merged PRs found in the last {days} days.</p>
+        {!isLoading && !error && data?.totalPRs === 0 && (
+          <div className="flex flex-col items-center gap-3 py-24 text-muted-foreground/30">
+            <GitMerge className="h-7 w-7" />
+            <p className="text-[11px] font-mono">no merged PRs in the last {days} days</p>
           </div>
         )}
 
         {!isLoading && !error && data && data.totalPRs > 0 && (
-          <>
+          <div>
             {view === "heatmap" && (
               <HeatmapView
                 prs={data.prs}
@@ -152,7 +162,7 @@ export default function GitHubPage() {
             {view === "time" && (
               <OverTimeView prs={data.prs} dateRange={data.dateRange} />
             )}
-          </>
+          </div>
         )}
       </div>
     </AppShell>
@@ -161,9 +171,13 @@ export default function GitHubPage() {
 
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-xl border bg-card px-5 py-4 min-w-[140px]">
-      <p className="text-xs text-muted-foreground mb-1">{label}</p>
-      <p className="text-3xl font-bold tabular-nums tracking-tight">{value}</p>
+    <div className="rounded-lg border border-border/50 bg-muted/20 px-4 py-3 min-w-[130px]">
+      <p className="text-[10px] font-mono text-muted-foreground/50 uppercase tracking-widest mb-2">
+        {label}
+      </p>
+      <p className="text-[2rem] font-mono font-semibold leading-none tracking-tight text-foreground">
+        {value}
+      </p>
     </div>
   );
 }
