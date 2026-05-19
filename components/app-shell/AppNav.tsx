@@ -8,6 +8,7 @@ import {
   Package,
   AlertTriangle,
   GitCommit,
+  GitPullRequest,
   Settings,
   ChevronsLeft,
   ChevronsRight,
@@ -90,6 +91,7 @@ export function AppNav({
       label: "Delivery",
       items: [
         { href: "/progress", label: "Progress", icon: BarChart3 },
+        { href: "/github", label: "GitHub", icon: GitPullRequest },
         {
           href: "/releases",
           label: "Releases",
