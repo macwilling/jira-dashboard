@@ -144,7 +144,7 @@ function fdSelectBlock(opts: { optional: boolean; initialOption?: FdOption }) {
   const element: Record<string, unknown> = {
     type: "external_select",
     action_id: ACTION_FD_TICKET,
-    placeholder: plainText("Search by FD ticket # or subject"),
+    placeholder: plainText("Search by ticket # or subject"),
     min_query_length: 2,
   };
   if (opts.initialOption) element.initial_option = opts.initialOption;
@@ -153,9 +153,6 @@ function fdSelectBlock(opts: { optional: boolean; initialOption?: FdOption }) {
     type: "input",
     block_id: BLOCK_FD_TICKET,
     label: plainText("Freshdesk Ticket"),
-    hint: plainText(
-      "Type a ticket number to look it up directly, or search by subject.",
-    ),
     element,
     dispatch_action: true,
     optional: opts.optional,
@@ -178,9 +175,7 @@ function fdReferenceBlocks(ref: FdReference): unknown[] {
 
   const ticketLabel = `FD #${ref.ticketId}`;
   const linkedTicket = ref.url ? `<${ref.url}|${ticketLabel}>` : ticketLabel;
-  const header =
-    `*Reference* · ${linkedTicket} — ${ref.subject || "(no subject)"}` +
-    (truncated ? "  ·  _truncated, open in Freshdesk for full text_" : "");
+  const header = `*Reference* · ${linkedTicket} — ${ref.subject || "(no subject)"}`;
 
   return [
     divider(),
@@ -254,13 +249,6 @@ export function buildCgGateView() {
     close: plainText("Cancel"),
     blocks: [
       {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: "Before proceeding, please confirm the following:",
-        },
-      },
-      {
         type: "input",
         block_id: BLOCK_CG_UPDATED,
         label: plainText("Has ConcreteGo been updated?"),
@@ -319,14 +307,12 @@ export function buildTicketSyncDetailsView(prefill: SyncPrefill = {}) {
       blockId: BLOCK_TENANT,
       actionId: ACTION_TENANT,
       label: "Tenant / Client",
-      placeholder: "e.g. Madden Materials (Jarco)",
       initialValue: prefill.tenant,
-      hint: "Auto-filled from the Freshdesk ticket — edit if needed.",
     }),
     textInputBlock({
       blockId: BLOCK_DG_TICKET,
       actionId: ACTION_DG_TICKET,
-      label: "DeliveryGo Ticket Number",
+      label: "DG Ticket Number",
       placeholder: "e.g. 1234",
       initialValue: prefill.dgTicket,
     }),
@@ -343,8 +329,8 @@ export function buildTicketSyncDetailsView(prefill: SyncPrefill = {}) {
     textInputBlock({
       blockId: BLOCK_FIELD_DETAILS,
       actionId: ACTION_FIELD_DETAILS,
-      label: "Field details (required if specifying manually)",
-      placeholder: "e.g.\nStatus → In Progress\nAssignee → John Smith",
+      label: "Field details",
+      placeholder: "e.g. Status → In Progress, Assignee → Jane",
       multiline: true,
       optional: true,
       initialValue: prefill.fieldDetails,
@@ -376,13 +362,6 @@ export interface SnailTrailPrefill {
 
 export function buildSnailTrailView(prefill: SnailTrailPrefill = {}) {
   const blocks: unknown[] = [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "Pick the Freshdesk ticket first — it identifies the customer and shows their request inline.",
-      },
-    },
     fdSelectBlock({ optional: false, initialOption: prefill.fdOption }),
   ];
   if (prefill.fdReference) blocks.push(...fdReferenceBlocks(prefill.fdReference));
@@ -392,15 +371,13 @@ export function buildSnailTrailView(prefill: SnailTrailPrefill = {}) {
       blockId: BLOCK_TENANT,
       actionId: ACTION_TENANT,
       label: "Tenant / Client",
-      placeholder: "e.g. Madden Materials (Jarco)",
       initialValue: prefill.tenant,
-      hint: "Auto-filled from the Freshdesk ticket — edit if needed.",
     }),
     textInputBlock({
       blockId: BLOCK_ST_DATES,
       actionId: ACTION_ST_DATES,
-      label: "Date(s) requested",
-      placeholder: "e.g. 1/13/26  •  or a range: 1/9–1/12",
+      label: "Date(s)",
+      placeholder: "e.g. 1/13/26 or 1/9–1/12",
       initialValue: prefill.dates,
     }),
     textInputBlock({
@@ -414,15 +391,15 @@ export function buildSnailTrailView(prefill: SnailTrailPrefill = {}) {
       blockId: BLOCK_ST_ORDERS,
       actionId: ACTION_ST_ORDERS,
       label: "Order number(s)",
-      placeholder: "e.g. Order #15, Order #99",
+      placeholder: "e.g. 15, 99",
       optional: true,
       initialValue: prefill.orders,
     }),
     textInputBlock({
       blockId: BLOCK_ST_DTICKETS,
       actionId: ACTION_ST_DTICKETS,
-      label: "Delivery ticket number(s) / range",
-      placeholder: "e.g. 806575 → 806600",
+      label: "Delivery ticket(s)",
+      placeholder: "e.g. 806575–806600",
       optional: true,
       initialValue: prefill.deliveryTickets,
     }),
@@ -430,7 +407,6 @@ export function buildSnailTrailView(prefill: SnailTrailPrefill = {}) {
       blockId: BLOCK_ST_NOTES,
       actionId: ACTION_ST_NOTES,
       label: "Additional context",
-      placeholder: "Anything else that helps locate the data",
       multiline: true,
       optional: true,
       initialValue: prefill.notes,
@@ -470,7 +446,6 @@ export function buildBugReportView(prefill: BugPrefill = {}) {
       blockId: BLOCK_BUG_TITLE,
       actionId: ACTION_BUG_TITLE,
       label: "Bug Title",
-      placeholder: "Brief, clear title for this bug",
       initialValue: prefill.bugTitle,
     }),
     radioBlock({
@@ -498,7 +473,6 @@ export function buildBugReportView(prefill: BugPrefill = {}) {
       blockId: BLOCK_STEPS,
       actionId: ACTION_STEPS,
       label: "Steps to reproduce",
-      placeholder: "1. Go to...\n2. Click on...\n3. See error",
       multiline: true,
       initialValue: prefill.steps,
     }),
@@ -506,7 +480,6 @@ export function buildBugReportView(prefill: BugPrefill = {}) {
       blockId: BLOCK_EXPECTED,
       actionId: ACTION_EXPECTED,
       label: "Expected behavior",
-      placeholder: "What should happen instead?",
       multiline: true,
       initialValue: prefill.expected,
     }),

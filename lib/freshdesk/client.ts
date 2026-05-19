@@ -161,11 +161,10 @@ export async function getTicket(
 /**
  * Search tickets for the Slack external-select picker.
  *
- * - A numeric query is treated as a ticket ID and looked up directly — this
- *   reaches ANY ticket, however old, which is the whole point of the picker.
- * - A text query filters the most recent tickets by subject substring
- *   (best-effort; Freshdesk has no robust free-text subject search in the
- *   public API).
+ * Substring-matches the query against recent tickets' IDs and subjects, so a
+ * partial number like "123" surfaces 1234, 12345, etc. A fully numeric query
+ * is also looked up directly by ID, which reaches tickets too old to be in
+ * the recent list. Best-effort — Freshdesk has no public free-text search.
  */
 export async function searchTickets(
   query: string,
@@ -173,12 +172,18 @@ export async function searchTickets(
   const q = query.trim();
   if (!q) return listRecentTickets(50);
 
-  if (/^\d+$/.test(q)) {
-    const ticket = await getTicket(Number(q));
-    return ticket ? [ticket] : [];
-  }
-
   const recent = await listRecentTickets(100);
   const lc = q.toLowerCase();
-  return recent.filter((t) => t.subject.toLowerCase().includes(lc)).slice(0, 50);
+  const matches = recent.filter(
+    (t) => String(t.id).includes(q) || t.subject.toLowerCase().includes(lc),
+  );
+
+  // A fully numeric query may be the exact ID of a ticket too old to appear
+  // in the recent list — fetch it directly and pin it to the top.
+  if (/^\d+$/.test(q) && !matches.some((t) => String(t.id) === q)) {
+    const exact = await getTicket(Number(q));
+    if (exact) matches.unshift(exact);
+  }
+
+  return matches.slice(0, 50);
 }
