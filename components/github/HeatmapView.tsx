@@ -1,7 +1,7 @@
 "use client";
 
+import { useState } from "react";
 import { PRRecord } from "@/lib/github/types";
-import { cn } from "@/lib/utils";
 
 interface Props {
   prs: PRRecord[];
@@ -20,92 +20,201 @@ function getDatesInRange(from: string, to: string): string[] {
   return dates;
 }
 
-function formatDateLabel(dateStr: string): string {
+function fmtDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-function cellColor(count: number): string {
-  if (count === 0) return "";
-  if (count === 1) return "bg-red-950 text-red-400";
-  if (count === 2) return "bg-red-900 text-red-200";
-  if (count <= 4) return "bg-red-700 text-white";
-  return "bg-red-500 text-white";
+// 5-step scale: transparent → dark red → vivid red
+const COLOR_STEPS = [
+  { bg: "rgba(255,255,255,0.06)", text: "transparent" },       // 0
+  { bg: "rgb(69,10,10)",          text: "rgb(248,113,113)" },  // 1 – red-950
+  { bg: "rgb(127,29,29)",         text: "rgb(252,165,165)" },  // 2 – red-900
+  { bg: "rgb(185,28,28)",         text: "rgb(255,255,255)" },  // 3 – red-700
+  { bg: "rgb(220,38,38)",         text: "rgb(255,255,255)" },  // 4 – red-600
+  { bg: "rgb(239,68,68)",         text: "rgb(255,255,255)" },  // 5+ – red-500
+];
+
+function cellStyle(count: number) {
+  const step = COLOR_STEPS[Math.min(count, COLOR_STEPS.length - 1)];
+  return { background: step.bg, color: step.text };
 }
 
+const CELL = 26;
+const GAP = 2;
+const NAME_W = 130;
+
 export function HeatmapView({ prs, contributors, dateRange }: Props) {
+  const [hovered, setHovered] = useState<string | null>(null); // "name|date"
+
   const dates = getDatesInRange(dateRange.from, dateRange.to);
 
-  // Build matrix: authorName → dateStr → count
   const matrix = new Map<string, Map<string, number>>();
   for (const pr of prs) {
-    const dateStr = pr.mergedAt.slice(0, 10);
+    const d = pr.mergedAt.slice(0, 10);
     if (!matrix.has(pr.authorName)) matrix.set(pr.authorName, new Map());
-    const byDate = matrix.get(pr.authorName)!;
-    byDate.set(dateStr, (byDate.get(dateStr) ?? 0) + 1);
+    const row = matrix.get(pr.authorName)!;
+    row.set(d, (row.get(d) ?? 0) + 1);
   }
 
+  const totals = new Map<string, number>(
+    contributors.map((name) => {
+      const row = matrix.get(name);
+      const t = row ? [...row.values()].reduce((s, n) => s + n, 0) : 0;
+      return [name, t];
+    })
+  );
+
   return (
-    <div className="overflow-x-auto">
-      <table className="border-separate border-spacing-[3px]">
-        <thead>
-          <tr>
-            {/* name column header */}
-            <th className="w-32 min-w-32" />
-            {dates.map((d) => (
-              <th key={d} className="w-7 min-w-7 p-0 align-bottom">
-                <div
-                  className="text-[10px] text-muted-foreground/60 whitespace-nowrap"
+    <div className="overflow-x-auto pb-2">
+      <div style={{ display: "inline-flex", flexDirection: "column", gap: GAP }}>
+
+        {/* Date header */}
+        <div style={{ display: "flex", alignItems: "flex-end", gap: GAP, paddingLeft: NAME_W + 8 }}>
+          {dates.map((d) => (
+            <div
+              key={d}
+              style={{ width: CELL, height: 44, display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+            >
+              <span
+                style={{
+                  fontSize: 9,
+                  color: "rgba(255,255,255,0.25)",
+                  writingMode: "vertical-rl",
+                  transform: "rotate(180deg)",
+                  lineHeight: 1,
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {fmtDate(d)}
+              </span>
+            </div>
+          ))}
+          <div style={{ width: 36, paddingBottom: 2, paddingLeft: 6 }}>
+            <span style={{ fontSize: 9, color: "rgba(255,255,255,0.2)", fontFamily: "var(--font-mono)" }}>
+              tot
+            </span>
+          </div>
+        </div>
+
+        {/* Rows */}
+        {contributors.map((name) => {
+          const row = matrix.get(name);
+          const total = totals.get(name) ?? 0;
+          return (
+            <div key={name} style={{ display: "flex", alignItems: "center" }}>
+              {/* Name */}
+              <div
+                style={{
+                  width: NAME_W,
+                  paddingRight: 8,
+                  textAlign: "right",
+                  flexShrink: 0,
+                }}
+              >
+                <span
                   style={{
-                    writingMode: "vertical-rl",
-                    transform: "rotate(180deg)",
-                    height: 48,
-                    lineHeight: 1,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: "rgba(255,255,255,0.75)",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  {formatDateLabel(d)}
-                </div>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {contributors.map((name) => {
-            const byDate = matrix.get(name);
-            return (
-              <tr key={name}>
-                <td className="pr-3 text-sm font-medium text-foreground whitespace-nowrap">
                   {name}
-                </td>
+                </span>
+              </div>
+
+              {/* Cells */}
+              <div style={{ display: "flex", gap: GAP }}>
                 {dates.map((d) => {
-                  const count = byDate?.get(d) ?? 0;
+                  const count = row?.get(d) ?? 0;
+                  const key = `${name}|${d}`;
+                  const isHov = hovered === key;
                   return (
-                    <td key={d} className="p-0">
-                      {count > 0 ? (
-                        <div
-                          title={`${count} PR${count > 1 ? "s" : ""} on ${formatDateLabel(d)}`}
-                          className={cn(
-                            "w-7 h-7 rounded flex items-center justify-center text-[11px] font-semibold tabular-nums cursor-default",
-                            cellColor(count),
-                            count === 1 && "opacity-70"
-                          )}
-                        >
-                          {count}
-                        </div>
-                      ) : (
-                        <div className="w-7 h-7 rounded bg-muted/20" />
-                      )}
-                    </td>
+                    <div
+                      key={d}
+                      title={count > 0 ? `${count} PR${count !== 1 ? "s" : ""} — ${fmtDate(d)}` : undefined}
+                      onMouseEnter={() => count > 0 && setHovered(key)}
+                      onMouseLeave={() => setHovered(null)}
+                      style={{
+                        width: CELL,
+                        height: CELL,
+                        borderRadius: 3,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 10,
+                        fontWeight: 700,
+                        fontFamily: "var(--font-mono)",
+                        cursor: count > 0 ? "default" : undefined,
+                        transition: "filter 0.08s",
+                        filter: isHov ? "brightness(1.35)" : undefined,
+                        flexShrink: 0,
+                        ...cellStyle(count),
+                      }}
+                    >
+                      {count > 0 ? count : null}
+                    </div>
                   );
                 })}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <p className="mt-3 text-[11px] text-muted-foreground/50">
-        darker = more PRs
-      </p>
+
+                {/* Row total */}
+                <div
+                  style={{
+                    width: 36,
+                    height: CELL,
+                    display: "flex",
+                    alignItems: "center",
+                    paddingLeft: 6,
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      fontFamily: "var(--font-mono)",
+                      color: "rgba(255,255,255,0.35)",
+                    }}
+                  >
+                    {total}
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          marginTop: 20,
+          paddingLeft: NAME_W + 8,
+        }}
+      >
+        <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", fontFamily: "var(--font-mono)" }}>
+          less
+        </span>
+        {COLOR_STEPS.map((_, i) => (
+          <div
+            key={i}
+            style={{
+              width: 14,
+              height: 14,
+              borderRadius: 2,
+              flexShrink: 0,
+              ...cellStyle(i),
+            }}
+          />
+        ))}
+        <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", fontFamily: "var(--font-mono)" }}>
+          more
+        </span>
+      </div>
     </div>
   );
 }
