@@ -64,6 +64,8 @@ export interface FdReference {
   ticketId: number;
   subject: string;
   description: string;
+  /** Link to the ticket in Freshdesk, when the domain is configured. */
+  url?: string;
 }
 
 // ─── block helpers ────────────────────────────────────────────────────────────
@@ -160,20 +162,43 @@ function fdSelectBlock(opts: { optional: boolean; initialOption?: FdOption }) {
   };
 }
 
-/** Read-only block showing the chosen FD ticket's subject + body, so whoever
- *  fills the form can transcribe details without leaving Slack. */
-function fdReferenceBlock(ref: FdReference) {
-  const desc = ref.description.trim();
-  const snippet = desc.length > 2400 ? `${desc.slice(0, 2400)}…` : desc;
-  return {
-    type: "section",
-    text: {
-      type: "mrkdwn",
-      text:
-        `:page_facing_up: *From FD #${ref.ticketId} — ${ref.subject || "(no subject)"}*\n` +
-        (snippet || "_(no description text)_"),
+/**
+ * Read-only reference for the chosen FD ticket, so whoever fills the form can
+ * transcribe details without leaving Slack. Set apart from the input fields:
+ * a small context header, the body as an indented quote block, and dividers
+ * top and bottom. Slack modals can't scroll a sub-region, so the body is
+ * truncated to keep it from dominating the form.
+ */
+const FD_REFERENCE_LIMIT = 700;
+
+function fdReferenceBlocks(ref: FdReference): unknown[] {
+  const desc = ref.description.trim().replace(/\n{3,}/g, "\n\n");
+  const truncated = desc.length > FD_REFERENCE_LIMIT;
+  const snippet = truncated ? `${desc.slice(0, FD_REFERENCE_LIMIT)}…` : desc;
+
+  const ticketLabel = `FD #${ref.ticketId}`;
+  const linkedTicket = ref.url ? `<${ref.url}|${ticketLabel}>` : ticketLabel;
+  const header =
+    `:page_facing_up: *Reference* · ${linkedTicket} — ${ref.subject || "(no subject)"}` +
+    (truncated ? "  ·  _truncated, open in Freshdesk for full text_" : "");
+
+  return [
+    divider(),
+    {
+      type: "context",
+      elements: [{ type: "mrkdwn", text: header }],
     },
-  };
+    {
+      type: "section",
+      // `>>>` renders a multi-line quote block — left bar + indent — which
+      // separates this from the surrounding input fields. The trailing
+      // divider is supplied by the caller's next block push.
+      text: {
+        type: "mrkdwn",
+        text: snippet ? `>>>${snippet}` : "_(no description text)_",
+      },
+    },
+  ];
 }
 
 function divider() {
@@ -287,7 +312,7 @@ export function buildTicketSyncDetailsView(prefill: SyncPrefill = {}) {
   const blocks: unknown[] = [
     fdSelectBlock({ optional: false, initialOption: prefill.fdOption }),
   ];
-  if (prefill.fdReference) blocks.push(fdReferenceBlock(prefill.fdReference));
+  if (prefill.fdReference) blocks.push(...fdReferenceBlocks(prefill.fdReference));
   blocks.push(
     divider(),
     textInputBlock({
@@ -360,7 +385,7 @@ export function buildSnailTrailView(prefill: SnailTrailPrefill = {}) {
     },
     fdSelectBlock({ optional: false, initialOption: prefill.fdOption }),
   ];
-  if (prefill.fdReference) blocks.push(fdReferenceBlock(prefill.fdReference));
+  if (prefill.fdReference) blocks.push(...fdReferenceBlocks(prefill.fdReference));
   blocks.push(
     divider(),
     textInputBlock({
@@ -438,7 +463,7 @@ export function buildBugReportView(prefill: BugPrefill = {}) {
   const blocks: unknown[] = [
     fdSelectBlock({ optional: true, initialOption: prefill.fdOption }),
   ];
-  if (prefill.fdReference) blocks.push(fdReferenceBlock(prefill.fdReference));
+  if (prefill.fdReference) blocks.push(...fdReferenceBlocks(prefill.fdReference));
   blocks.push(
     divider(),
     textInputBlock({

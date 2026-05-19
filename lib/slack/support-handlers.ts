@@ -195,10 +195,12 @@ export async function handleSupportBlockAction(
     const id = parseInt(selected.value, 10);
     const ticket = Number.isFinite(id) ? await getTicket(id) : null;
     if (ticket) {
+      const domain = process.env.FRESHDESK_DOMAIN ?? "";
       fdReference = {
         ticketId: ticket.id,
         subject: ticket.subject,
         description: ticket.descriptionText,
+        url: domain ? freshdeskTicketUrl(domain, ticket.id) : undefined,
       };
       fetchedTenant = ticket.companyName ?? undefined;
     }
