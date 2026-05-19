@@ -179,7 +179,7 @@ function fdReferenceBlocks(ref: FdReference): unknown[] {
   const ticketLabel = `FD #${ref.ticketId}`;
   const linkedTicket = ref.url ? `<${ref.url}|${ticketLabel}>` : ticketLabel;
   const header =
-    `:page_facing_up: *Reference* · ${linkedTicket} — ${ref.subject || "(no subject)"}` +
+    `*Reference* · ${linkedTicket} — ${ref.subject || "(no subject)"}` +
     (truncated ? "  ·  _truncated, open in Freshdesk for full text_" : "");
 
   return [
