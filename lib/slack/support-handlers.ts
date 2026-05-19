@@ -10,6 +10,7 @@ import {
   getTicket,
   searchTickets,
   freshdeskTicketUrl,
+  hasFreshdeskCredentials,
 } from "@/lib/freshdesk/client";
 import { postSlackMessage, updateSlackModal } from "@/lib/slack/client";
 import {
@@ -138,6 +139,13 @@ export async function handleSupportBlockSuggestion(
 ): Promise<NextResponse> {
   const query = (payload.value ?? "").trim();
   const tickets = await searchTickets(query);
+  // Diagnostic: distinguishes "Slack never called us" (no log at all) from
+  // "FD unconfigured" (fdConfigured:false) from "FD returned nothing".
+  console.log("[support-handlers] FD suggestion", {
+    query,
+    fdConfigured: hasFreshdeskCredentials(),
+    resultCount: tickets.length,
+  });
   const options = tickets.slice(0, 100).map((t) => ({
     text: {
       type: "plain_text" as const,
