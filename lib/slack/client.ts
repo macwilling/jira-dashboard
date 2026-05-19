@@ -143,6 +143,21 @@ export async function openSlackModal(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// views.update — re-render an open modal in place. Used to pre-fill support
+// modals once a Freshdesk ticket is chosen. `hash` guards against clobbering a
+// view the user changed concurrently; it's optional and we pass it when known.
+
+export async function updateSlackModal(
+  viewId: string,
+  view: unknown,
+  hash?: string,
+): Promise<void> {
+  const body: Record<string, unknown> = { view_id: viewId, view };
+  if (hash) body.hash = hash;
+  await slackFetch<SlackApiResponse>("views.update", { body });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // auth.test
 
 export interface AuthTestResult {

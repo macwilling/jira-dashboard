@@ -1,8 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifySlackSignature } from "@/lib/slack/signing";
 import { updateSlackMessage } from "@/lib/slack/client";
-import { handleSupportViewSubmission } from "@/lib/slack/support-handlers";
-import { CB_REQUEST_TYPE, CB_TICKET_SYNC_CG_GATE, CB_TICKET_SYNC_DETAILS, CB_BUG_REPORT } from "@/lib/slack/support-modals";
+import {
+  handleSupportViewSubmission,
+  handleSupportBlockAction,
+  handleSupportBlockSuggestion,
+  isSupportBlockAction,
+  isSupportBlockSuggestion,
+} from "@/lib/slack/support-handlers";
+import {
+  CB_REQUEST_TYPE,
+  CB_TICKET_SYNC_CG_GATE,
+  CB_TICKET_SYNC_DETAILS,
+  CB_SNAIL_TRAIL,
+  CB_BUG_REPORT,
+} from "@/lib/slack/support-modals";
 import {
   getRelease,
   setApprovalApproved,
@@ -53,10 +65,19 @@ interface SlackInteractivePayload {
   user?: { id?: string };
   channel?: { id?: string };
   message?: { ts?: string };
-  actions?: Array<{ action_id?: string; value?: string }>;
+  /** block_suggestion: the action being typed into. */
+  action_id?: string;
+  /** block_suggestion: the text the user has typed so far. */
+  value?: string;
+  actions?: Array<{
+    action_id?: string;
+    value?: string;
+    selected_option?: { text?: { text?: string }; value?: string } | null;
+  }>;
   response_url?: string;
   view?: {
     id?: string;
+    hash?: string;
     callback_id?: string;
     state?: {
       values?: Record<
@@ -126,11 +147,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid payload" }, { status: 400 });
   }
 
+  // block_suggestion: Slack asking for external_select options as the user
+  // types into the Freshdesk ticket picker. Must reply with `{ options }`.
+  if (isSupportBlockSuggestion(payload)) {
+    return handleSupportBlockSuggestion(payload);
+  }
+
   // Route view_submission payloads (modal form submissions) to support handlers.
   const supportCallbacks = new Set([
     CB_REQUEST_TYPE,
     CB_TICKET_SYNC_CG_GATE,
     CB_TICKET_SYNC_DETAILS,
+    CB_SNAIL_TRAIL,
     CB_BUG_REPORT,
   ]);
   if (
@@ -139,6 +167,12 @@ export async function POST(req: NextRequest) {
     supportCallbacks.has(payload.view.callback_id)
   ) {
     return handleSupportViewSubmission(payload);
+  }
+
+  // block_actions from a support modal: the Freshdesk ticket was chosen —
+  // re-render the modal with the ticket's details pre-filled.
+  if (isSupportBlockAction(payload)) {
+    return handleSupportBlockAction(payload);
   }
 
   const action = payload.actions?.[0];
@@ -408,8 +442,9 @@ export async function GET(req: NextRequest) {
       "2) NEXT_PUBLIC_APP_URL set — used for 'View in app' links",
       "3) Slack app → Interactivity & Shortcuts is ENABLED",
       "4) Slack app → Interactivity Request URL matches the field above",
-      "5) The bot is a member of the target channel (for posting)",
-      "6) Deployment is publicly reachable from Slack (prod, or dev via ngrok)",
+      "5) Slack app → Interactivity → Select Menus → Options Load URL also set to the field above (required for the Freshdesk ticket search)",
+      "6) The bot is a member of the target channel (for posting)",
+      "7) Deployment is publicly reachable from Slack (prod, or dev via ngrok)",
     ],
   });
 }

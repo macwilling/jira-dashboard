@@ -5,6 +5,13 @@ export interface FreshdeskTicket {
   created_at: string;
 }
 
+/** A single ticket fetched by ID, enriched with the body text and company
+ *  name. Used to pre-fill the Slack support modals from a chosen FD ticket. */
+export interface FreshdeskTicketDetail extends FreshdeskTicket {
+  descriptionText: string;
+  companyName: string | null;
+}
+
 function getCredentials() {
   const domain = process.env.FRESHDESK_DOMAIN;
   const apiKey = process.env.FRESHDESK_API_KEY;
@@ -67,4 +74,111 @@ export async function listRecentTickets(
 
 export function freshdeskTicketUrl(domain: string, ticketId: number): string {
   return `https://${domain}.freshdesk.com/helpdesk/tickets/${ticketId}`;
+}
+
+async function fetchCompanyName(
+  creds: { baseUrl: string; auth: string },
+  companyId: number,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${creds.baseUrl}/companies/${companyId}`, {
+      headers: {
+        Authorization: `Basic ${creds.auth}`,
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const company = (await res.json()) as { name?: string };
+    return company.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch a single ticket by ID, including its body text and company name.
+ * Works for ANY ticket regardless of age — unlike `listRecentTickets`, this
+ * is a direct lookup. Returns null if the ticket doesn't exist or FD is
+ * unconfigured.
+ */
+export async function getTicket(
+  id: number,
+): Promise<FreshdeskTicketDetail | null> {
+  const creds = getCredentials();
+  if (!creds || !Number.isFinite(id)) return null;
+
+  try {
+    const url = new URL(`${creds.baseUrl}/tickets/${id}`);
+    url.searchParams.set("include", "company");
+
+    const res = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Basic ${creds.auth}`,
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      if (res.status !== 404) {
+        console.warn(`[freshdesk] getTicket ${id} failed: ${res.status}`);
+      }
+      return null;
+    }
+
+    const t = (await res.json()) as {
+      id: number;
+      subject?: string;
+      status: number;
+      created_at: string;
+      description_text?: string;
+      company_id?: number;
+      company?: { name?: string };
+    };
+
+    // `include=company` usually inlines the company; if not, fall back to a
+    // direct company lookup so tenant auto-fill still works.
+    let companyName = t.company?.name ?? null;
+    if (!companyName && t.company_id) {
+      companyName = await fetchCompanyName(creds, t.company_id);
+    }
+
+    return {
+      id: t.id,
+      subject: t.subject ?? "",
+      status: t.status,
+      created_at: t.created_at,
+      descriptionText: t.description_text ?? "",
+      companyName,
+    };
+  } catch (e) {
+    console.warn(`[freshdesk] getTicket ${id} error`, e);
+    return null;
+  }
+}
+
+/**
+ * Search tickets for the Slack external-select picker.
+ *
+ * - A numeric query is treated as a ticket ID and looked up directly — this
+ *   reaches ANY ticket, however old, which is the whole point of the picker.
+ * - A text query filters the most recent tickets by subject substring
+ *   (best-effort; Freshdesk has no robust free-text subject search in the
+ *   public API).
+ */
+export async function searchTickets(
+  query: string,
+): Promise<FreshdeskTicket[]> {
+  const q = query.trim();
+  if (!q) return listRecentTickets(50);
+
+  if (/^\d+$/.test(q)) {
+    const ticket = await getTicket(Number(q));
+    return ticket ? [ticket] : [];
+  }
+
+  const recent = await listRecentTickets(100);
+  const lc = q.toLowerCase();
+  return recent.filter((t) => t.subject.toLowerCase().includes(lc)).slice(0, 50);
 }
