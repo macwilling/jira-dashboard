@@ -271,6 +271,36 @@ export function adfParagraphWithLink(
   return { type: "paragraph", content };
 }
 
+/** A paragraph: bold label, then a plain value. */
+export function adfLabelValue(label: string, value: string): AdfParagraph {
+  return {
+    type: "paragraph",
+    content: [
+      { type: "text", text: `${label}: `, marks: [{ type: "strong" }] },
+      { type: "text", text: value },
+    ],
+  };
+}
+
+/** A paragraph: bold label, then a hyperlink. */
+export function adfLabelLink(
+  label: string,
+  linkText: string,
+  href: string,
+): AdfParagraph {
+  return {
+    type: "paragraph",
+    content: [
+      { type: "text", text: `${label}: `, marks: [{ type: "strong" }] },
+      {
+        type: "text",
+        text: linkText,
+        marks: [{ type: "link", attrs: { href } }],
+      },
+    ],
+  };
+}
+
 export async function createIssue(
   params: CreateIssueParams,
 ): Promise<CreateIssueResult> {

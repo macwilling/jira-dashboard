@@ -4,7 +4,8 @@ import {
   adfDoc,
   adfParagraph,
   adfHeading,
-  adfParagraphWithLink,
+  adfLabelValue,
+  adfLabelLink,
 } from "@/lib/jira/client";
 import {
   getTicket,
@@ -357,10 +358,10 @@ async function notifyCreated(
 }
 
 function fdLinkBlocks(fdId: number | null) {
-  if (!fdId) return [adfParagraph("FD Ticket: Not specified")];
+  if (!fdId) return [adfLabelValue("Freshdesk Ticket", "Not specified")];
   const domain = process.env.FRESHDESK_DOMAIN ?? "";
   return [
-    adfParagraphWithLink(`FD Ticket #${fdId}`, freshdeskTicketUrl(domain, fdId)),
+    adfLabelLink("Freshdesk Ticket", `#${fdId}`, freshdeskTicketUrl(domain, fdId)),
   ];
 }
 
@@ -371,7 +372,7 @@ async function handleTicketSyncDetailsSubmit(
 ): Promise<NextResponse> {
   const state = payload.view?.state;
   const fdTicket = getField(state, BLOCK_FD_TICKET, ACTION_FD_TICKET);
-  const tenant = getField(state, BLOCK_TENANT, ACTION_TENANT);
+  let tenant = getField(state, BLOCK_TENANT, ACTION_TENANT);
   const dgTicket = getField(state, BLOCK_DG_TICKET, ACTION_DG_TICKET);
   const syncMethod = getField(state, BLOCK_SYNC_METHOD, ACTION_SYNC_METHOD);
   const fieldDetails = getField(state, BLOCK_FIELD_DETAILS, ACTION_FIELD_DETAILS);
@@ -394,6 +395,11 @@ async function handleTicketSyncDetailsSubmit(
   }
 
   const fdId = fdTicket ? parseInt(fdTicket, 10) : null;
+  // The modal tenant field can submit empty if the views.update pre-fill
+  // didn't carry through — fall back to the FD ticket's company.
+  if (!tenant && fdId) {
+    tenant = (await getTicket(fdId))?.companyName ?? "";
+  }
   const isMirror = syncMethod === "mirror";
   const tenantLabel = tenant || "Unknown";
   const summary = `${tenantLabel} | DG Ticket Sync (DG-${dgTicket}) | ${fdId ? `FD${fdId}` : "No FD"}`;
@@ -401,10 +407,11 @@ async function handleTicketSyncDetailsSubmit(
   const descBlocks = [
     adfHeading("Sync Request"),
     ...fdLinkBlocks(fdId),
-    adfParagraph(`Tenant / Client: ${tenantLabel}`),
-    adfParagraph(`DG Ticket: #${dgTicket}`),
-    adfParagraph(
-      `Sync Method: ${isMirror ? "Mirror from ConcreteGo" : "Manual field specification"}`,
+    adfLabelValue("Tenant / Client", tenantLabel),
+    adfLabelValue("DG Ticket", `#${dgTicket}`),
+    adfLabelValue(
+      "Sync Method",
+      isMirror ? "Mirror from ConcreteGo" : "Manual field specification",
     ),
     ...(isMirror
       ? []
@@ -447,7 +454,7 @@ async function handleSnailTrailSubmit(
 ): Promise<NextResponse> {
   const state = payload.view?.state;
   const fdTicket = getField(state, BLOCK_FD_TICKET, ACTION_FD_TICKET);
-  const tenant = getField(state, BLOCK_TENANT, ACTION_TENANT);
+  let tenant = getField(state, BLOCK_TENANT, ACTION_TENANT);
   const dates = getField(state, BLOCK_ST_DATES, ACTION_ST_DATES);
   const trucks = getField(state, BLOCK_ST_TRUCKS, ACTION_ST_TRUCKS);
   const orders = getField(state, BLOCK_ST_ORDERS, ACTION_ST_ORDERS);
@@ -468,18 +475,23 @@ async function handleSnailTrailSubmit(
   }
 
   const fdId = fdTicket ? parseInt(fdTicket, 10) : null;
+  // The modal tenant field can submit empty if the views.update pre-fill
+  // didn't carry through — fall back to the FD ticket's company.
+  if (!tenant && fdId) {
+    tenant = (await getTicket(fdId))?.companyName ?? "";
+  }
   const tenantLabel = tenant || "Unknown";
   const summary = `${tenantLabel} | Snail Trail | ${fdId ? `FD${fdId}` : "No FD"}`;
 
   const descBlocks = [
     adfHeading("Snail Trail Retrieval"),
     ...fdLinkBlocks(fdId),
-    adfParagraph(`Tenant / Client: ${tenantLabel}`),
+    adfLabelValue("Tenant / Client", tenantLabel),
     adfHeading("Retrieval Details", 4),
-    adfParagraph(`Date(s): ${dates}`),
-    adfParagraph(`Truck(s): ${trucks}`),
-    adfParagraph(`Order(s): ${orders || "Not specified"}`),
-    adfParagraph(`Delivery ticket(s): ${deliveryTickets || "Not specified"}`),
+    adfLabelValue("Date(s)", dates),
+    adfLabelValue("Truck(s)", trucks),
+    adfLabelValue("Order(s)", orders || "Not specified"),
+    adfLabelValue("Delivery ticket(s)", deliveryTickets || "Not specified"),
     adfHeading("Additional Context", 4),
     adfParagraph(notes || "None provided"),
     adfParagraph("Raised via Slack."),
@@ -549,8 +561,8 @@ async function handleBugReportSubmit(
     adfHeading("Bug Report"),
     ...fdLinkBlocks(fdId),
     adfHeading("Triage", 4),
-    adfParagraph(`Reproduced internally: ${reproducedLabel}`),
-    adfParagraph(`Affecting multiple clients: ${multiClientLabel}`),
+    adfLabelValue("Reproduced internally", reproducedLabel),
+    adfLabelValue("Affecting multiple clients", multiClientLabel),
     adfHeading("Steps to Reproduce", 4),
     adfParagraph(steps || "Not provided"),
     adfHeading("Expected Behavior", 4),
