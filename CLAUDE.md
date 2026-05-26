@@ -4,19 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Jira Standup Viewer — a Next.js 14 (App Router) dashboard for facilitating scrum standups. Fetches tickets from Jira Cloud, groups them by team member and status, and displays sprint progress. Built with TypeScript, Tailwind CSS, and shadcn/ui components.
+Jira Standup Viewer — a Next.js 14 (App Router) dashboard for facilitating scrum standups, tracking story progress, automating release checklists, and routing support requests. Fetches tickets from Jira Cloud and integrates with Cloudflare (KV + D1), Slack, Google (Tasks/Calendar), Freshdesk, GitHub, and AWS S3. Built with TypeScript, Tailwind CSS, and shadcn/ui components.
 
 ## Commands
 
 - `npm run dev` — Start development server
 - `npm run build` — Production build
 - `npm run lint` — ESLint
+- `node --env-file=.env.local scripts/apply-migrations.mjs` — Apply additive D1 migrations (idempotent; checks `PRAGMA table_info` before each `ALTER`)
 
 No test framework is configured.
 
+The Cloudflare cron worker in `cron/` is a **separate npm package** with its own `package.json`. Deploy it with `wrangler deploy` from inside `cron/` (see `cron/README.md`).
+
 ## Architecture
 
-### Data Flow
+### Data Flow (standup dashboard)
 
 ```
 SWR (5min poll) → /api/jira/tickets → Jira Cloud REST API
@@ -25,56 +28,83 @@ SWR (5min poll) → /api/jira/tickets → Jira Cloud REST API
                                       └── mapJiraIssue (ADF → Markdown)
 ```
 
-### Key Layers
+### Storage layers
 
-- **`app/api/jira/`** — Server-side API routes that proxy Jira Cloud (Basic Auth). Endpoints: `tickets`, `issues`, `search`, `attachment`, `epic-children`.
-- **`lib/jira/client.ts`** — Jira HTTP client with credential handling.
-- **`lib/jira/mappers.ts`** — Converts Jira responses to app types. Includes ADF (Atlassian Document Format) → Markdown/HTML conversion, status category mapping, and epic color resolution.
-- **`lib/jira/types.ts`** — Jira API response type definitions.
-- **`lib/types.ts`** — App-level types (Ticket, TeamMember, Sprint).
-- **`lib/ticket-data-context.tsx`** — React Context + SWR provider for global ticket/team/sprint state. Falls back to mock data when unconfigured.
-- **`lib/config.ts`** — Dashboard configuration stored in Cloudflare KV (via Upstash REST API). Stores JQL filter, board ID, sprint field ID, L2 label patterns.
+- **Cloudflare KV** (`lib/config.ts`, via Upstash-style REST API) — dashboard configuration: JQL filter, board ID, sprint field ID, L2 label patterns.
+- **Cloudflare D1** (`lib/d1/client.ts`, via the D1 REST API) — relational store for the release pipeline. Used because the app runs on Vercel where a native D1 binding isn't available. Schema lives in `migrations/` (numbered SQL files, applied in order).
+
+### Jira layer
+
+- **`app/api/jira/`** — Server-side API routes that proxy Jira Cloud (Basic Auth). Endpoints: `tickets`, `issues`, `search`, `attachment`, `changelog`, `epic-children`.
+- **`lib/jira/client.ts`** — Jira HTTP client; credential handling, issue creation, and ADF document builders (`adfDoc`, `adfParagraph`, `adfHeading`, etc.) used by the Slack support flow.
+- **`lib/jira/mappers.ts`** — Converts Jira responses to app types. Includes ADF (Atlassian Document Format) → Markdown/HTML conversion, status category mapping, epic color resolution.
+- **`lib/jira/versions.ts`** — Project version fetching, used by the release pipeline and cron recovery.
+- **`lib/jira/types.ts`** / **`lib/types.ts`** — Jira API response types / app-level types.
+- **`lib/ticket-data-context.tsx`** — React Context + SWR provider for global ticket/team/sprint state. Falls back to mock data (`lib/mock-data.ts`) when unconfigured.
+
+### Pages
+
+- `/` — Main standup dashboard (client component)
+- `/changes`, `/risks` — Standup-support views (recent ticket changes, at-risk tickets)
+- `/releases`, `/releases/workflows`, `/releases/categories`, `/releases/task-library` — Release pipeline + config; see `docs/release-flow.md`
+- `/github` — PR statistics (heatmap / by-contributor / over-time)
+- `/files` — S3 file upload + public-link sharing
+- `/settings` — Configuration UI for JQL filter, L2 labels, sprint field
+
+App chrome lives in `components/app-shell/` (`AppShell`, `AppNav`, `AppTopBar`, `TicketBrowseShell`).
+
+### Release Management (`/releases`)
+
+Automated release checklist pipeline. See `docs/release-flow.md` for the full end-to-end flow with mermaid diagram. **Keep that doc in sync when modifying `lib/releases/`, `app/api/webhooks/jira/version/`, `app/api/webhooks/slack/interactive/`, or `app/api/releases/`.**
+
+Flow: Jira version webhook → D1 → category resolution → workflow matching → task instance generation → (optional) Slack approval gate → dispatch to Google Tasks / Calendar → Slack notifications.
+
+- **`lib/releases/orchestrator.ts`** — Single entry point `handleVersionEvent`. Handles delete/upsert, category resolution, category-change conflict detection, task generation, date cascade, approval gate, lifecycle notifications. Idempotent — safe to replay.
+- **Workflows model** (refactored; see `docs/workflows-refactor-handoff.md`) — A *workflow* groups tasks + notifications and is matched to a release by *category* (parsed from the version name). Key stores: `workflows-store.ts`, `categories.ts`, `task-definitions-store.ts` (reusable task library), `task-instances-store.ts` (materialization with locks/overrides), `events-store.ts` (append-only audit log).
+- **Cron recovery** — `app/api/cron/recover/route.ts` reconciles Jira's versions against D1 and replays missed webhook events. Driven by the `cron/` Cloudflare worker every 5 min.
+
+### Slack support intake
+
+Slack slash command → modal flow that files Jira issues (and links Freshdesk tickets).
+
+- `app/api/slack/command/route.ts` — slash command entry; verifies Slack signature, opens the request-type modal.
+- `app/api/webhooks/slack/interactive/route.ts` — handles modal submissions / interactive components.
+- `lib/slack/support-modals.ts` — Block Kit modal view builders; `lib/slack/support-handlers.ts` — submission handlers that create Jira issues.
+- `lib/slack/signing.ts` — verifies `x-slack-signature`.
+- `lib/freshdesk/client.ts` — fetches/searches Freshdesk tickets to pre-fill modals.
+
+### Other integrations
+
+- **`lib/google/client.ts`** + `app/api/auth/google/` — Google OAuth; Tasks + Calendar for release task dispatch.
+- **`lib/github/client.ts`** + `app/api/github/prs/` — GitHub PR stats (classic PAT, repo scope, read-only).
+- **AWS S3** (`@aws-sdk/client-s3`) — backs `/files`; presigned URLs for a public-read bucket.
 
 ### UI Components
 
-- **`components/TicketDrawer.tsx`** — Largest component; side drawer showing full ticket details with ADF-rendered descriptions, linked tickets, and attachments.
+- **`components/TicketDrawer.tsx`** — Largest component; side drawer with ADF-rendered descriptions, linked tickets, attachments.
 - **`components/TeamCard.tsx`** — Per-member card with grouped ticket rows.
 - **`components/SearchBar.tsx`** — Command palette (`cmdk`) with `/` keyboard shortcut.
 - **`components/ui/`** — shadcn/ui primitives (do not modify directly; regenerate via shadcn CLI).
 
-### Progress Page (`/progress`)
-
-A PM-facing view for tracking story-level progress and identifying blockers. See `docs/progress-page.md` for full details.
-
-- **`lib/progress-utils.ts`** — Builds flat `StoryCard[]` from sprint tickets. Reconstructs Story→Task hierarchy from Jira issue links (not parent/child — tasks are *linked* to stories via inconsistent link types). Uses heuristic: any non-blocking link between a Story and a Task = child relationship.
-- **`components/progress/`** — `StoryCard`, `TaskChipBadge`, `FilterBar`, `MiniProgressBar`.
-- **Sprint-aware clustering** — If any ticket in a story's cluster (the story or any linked task) is in the sprint, the entire story appears with all its tasks.
-- **Enriched link data** — `TicketLinkDef` includes `targetType`, `targetSummary`, `targetStatus`, `targetStatusCategory`, `rawDescription`. This lets us show task chips for linked tickets not in the sprint without extra API calls.
-- **Scope toggle** — `/api/jira/tickets?scope=all-open` overrides JQL to fetch all non-closed issues across the project.
-
-### Release Management (`/releases`)
-
-Automated release checklist pipeline: Jira version webhooks → D1 → template matching → task instance generation → (optional) Slack approval gate → dispatch to Google Tasks / Calendar → Slack notifications. See `docs/release-flow.md` for the full end-to-end flow with mermaid diagram. **Keep that doc in sync when modifying any file under `lib/releases/`, `app/api/webhooks/jira/version/`, `app/api/webhooks/slack/interactive/`, or `app/api/releases/`.**
-
-### Pages
-
-- `/` — Main dashboard (client component)
-- `/progress` — Story progress view with filters (scope, fix version, epic)
-- `/releases` — Release list + per-release task dispatch status
-- `/releases/templates`, `/releases/task-library` — Template + task library config
-- `/settings` — Configuration UI for JQL filter, L2 labels, sprint field
-
 ## Conventions
 
-- Path alias: `@/*` maps to the project root (e.g., `@/lib/utils`, `@/components/ui/button`)
-- Styling: Tailwind CSS with CSS variables for theming (dark mode supported). Uses `cn()` from `lib/utils.ts` for class merging.
+- Path alias: `@/*` maps to the project root (e.g., `@/lib/utils`, `@/components/ui/button`).
+- Styling: Tailwind CSS with CSS variables for theming (dark mode supported). Use `cn()` from `lib/utils.ts` for class merging.
 - Component variants use `class-variance-authority` (cva).
 - Icons: Lucide React (`lucide-react`).
 - shadcn config in `components.json` uses `base-nova` style.
+- D1 schema changes: add a new numbered file in `migrations/`; additive `ALTER`s should be guarded so `apply-migrations.mjs` stays idempotent.
 
 ## Environment Variables
 
-Required in `.env.local` (see `.env.example`):
-- `JIRA_URL`, `NEXT_PUBLIC_JIRA_URL` — Jira Cloud instance URL
-- `JIRA_EMAIL`, `JIRA_API_TOKEN` — Jira Basic Auth credentials
-- `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_KV_NAMESPACE_ID` — Cloudflare KV for config storage
+Required/optional in `.env.local` (see `.env.example` for the full annotated list):
+
+- `JIRA_URL`, `NEXT_PUBLIC_JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` — Jira Cloud (Basic Auth).
+- `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_KV_NAMESPACE_ID`, `CLOUDFLARE_D1_DATABASE_ID` — Cloudflare KV (config) + D1 (release store).
+- `JIRA_WEBHOOK_SECRET`, `CRON_RECOVERY_SECRET`, `JIRA_PROJECT_KEY` — webhook ingestion + cron recovery.
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` — Google OAuth (Tasks + Calendar).
+- `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` — Slack notifications + interactive components.
+- `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME` — `/files` page.
+- `FRESHDESK_DOMAIN`, `FRESHDESK_API_KEY` — Freshdesk support-ticket lookups.
+- `GITHUB_TOKEN` — `/github` PR stats.
+- `NEXT_PUBLIC_APP_URL` — public origin, used in Slack "View in app" links and the interactive Request URL.

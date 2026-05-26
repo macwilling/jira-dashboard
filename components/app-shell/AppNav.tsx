@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Home,
-  BarChart3,
   Package,
   AlertTriangle,
   GitCommit,
@@ -90,7 +89,6 @@ export function AppNav({
     {
       label: "Delivery",
       items: [
-        { href: "/progress", label: "Progress", icon: BarChart3 },
         { href: "/github", label: "GitHub", icon: GitPullRequest },
         {
           href: "/releases",

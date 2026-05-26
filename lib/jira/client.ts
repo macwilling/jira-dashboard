@@ -57,23 +57,55 @@ export async function fetchEpicColor(epicKey: string): Promise<string | null> {
   }
 }
 
+// Epic colors are effectively static — an epic's color rarely changes. Without
+// a cache, the dashboard's 5-minute SWR poll re-fans-out one Agile API call per
+// epic on every refresh. Cache resolved colors in-process for a long TTL;
+// cache null results only briefly so a transient Jira blip is retried soon
+// rather than sticking. The cache is per-server-instance (fine on serverless —
+// it warms within the first poll and survives subsequent polls on that instance).
+const EPIC_COLOR_TTL_MS = 6 * 60 * 60 * 1000; // 6h for resolved colors
+const EPIC_COLOR_MISS_TTL_MS = 5 * 60 * 1000; // 5min for null/failed lookups
+const epicColorCache = new Map<string, { color: string | null; fetchedAt: number }>();
+
+/** Return a fresh cache entry for an epic, or null if missing/expired. */
+function getCachedEpicColor(epicKey: string): { color: string | null } | null {
+  const entry = epicColorCache.get(epicKey);
+  if (!entry) return null;
+  const ttl = entry.color ? EPIC_COLOR_TTL_MS : EPIC_COLOR_MISS_TTL_MS;
+  if (Date.now() - entry.fetchedAt > ttl) {
+    epicColorCache.delete(epicKey);
+    return null;
+  }
+  return { color: entry.color };
+}
+
 /** Batch-fetch epic colors for a set of epic keys. Returns a map of epicKey -> color name. */
 export async function fetchEpicColors(epicKeys: string[]): Promise<Map<string, string>> {
   const colorMap = new Map<string, string>();
-  // Fetch in parallel, max 10 concurrent
-  const chunks: string[][] = [];
-  for (let i = 0; i < epicKeys.length; i += 10) {
-    chunks.push(epicKeys.slice(i, i + 10));
+  const misses: string[] = [];
+
+  // Serve what we can from the cache; collect the rest to fetch.
+  for (const key of epicKeys) {
+    const cached = getCachedEpicColor(key);
+    if (cached) {
+      if (cached.color) colorMap.set(key, cached.color);
+    } else {
+      misses.push(key);
+    }
   }
-  for (const chunk of chunks) {
-    const results = await Promise.allSettled(
+
+  // Fetch only the uncached epics, max 10 concurrent.
+  for (let i = 0; i < misses.length; i += 10) {
+    const chunk = misses.slice(i, i + 10);
+    await Promise.allSettled(
       chunk.map(async (key) => {
         const color = await fetchEpicColor(key);
+        epicColorCache.set(key, { color, fetchedAt: Date.now() });
         if (color) colorMap.set(key, color);
       })
     );
-    void results; // consume
   }
+
   return colorMap;
 }
 
