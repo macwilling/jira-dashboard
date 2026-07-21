@@ -15,9 +15,11 @@ import {
   buildSnapshot,
   diffSnapshots,
   relativeTime,
+  resolveEventActors,
   seedFeed,
 } from "./feed";
 import { isUnlocked, playDing, unlockOnGesture } from "./sound";
+import { SourceIcon } from "./source-icons";
 import { Stage, STAGE_COLORS, stageOf } from "./stages";
 
 const ACCENT = "#4493f8";
@@ -42,6 +44,8 @@ interface GitHubActivityEvent {
   id: string;
   kind:
     | "pr-open"
+    | "pr-draft"
+    | "pr-approved"
     | "pr-merged"
     | "pr-closed"
     | "deploy-start"
@@ -56,6 +60,8 @@ interface GitHubActivityEvent {
 
 const GITHUB_EVENT_TEXT: Record<GitHubActivityEvent["kind"], string> = {
   "pr-open": "PR opened",
+  "pr-draft": "draft PR opened",
+  "pr-approved": "PR approved",
   "pr-merged": "PR merged",
   "pr-closed": "PR closed without merge",
   "deploy-start": "deployment started",
@@ -298,12 +304,15 @@ export default function WallboardPage() {
     snapRef.current = buildSnapshot(tickets);
     if (events.length === 0) return;
 
-    setFeed((f) =>
-      [...events, ...f].sort((a, b) => b.at - a.at).slice(0, 60)
-    );
-    const toToast = events.slice(0, 4);
-    setToasts((t) => [...t, ...toToast].slice(-4));
-    if (soundOnRef.current) playDing();
+    // Swap the assignee guess for the real actor before showing anything
+    resolveEventActors(events).then((resolved) => {
+      setFeed((f) =>
+        [...resolved, ...f].sort((a, b) => b.at - a.at).slice(0, 60)
+      );
+      const toToast = resolved.slice(0, 4);
+      setToasts((t) => [...t, ...toToast].slice(-4));
+      if (soundOnRef.current) playDing();
+    });
   }, [tickets, memberName]);
 
   // Expire toasts off the 1s tick
@@ -355,6 +364,13 @@ export default function WallboardPage() {
           kind: "pr-merged",
           text: "PR merged",
           who: "bkowalski",
+        },
+        {
+          key: "api#217",
+          summary: "feat: preventative maintenance notification hooks",
+          kind: "pr-approved",
+          text: "PR approved",
+          who: "jshynkaruk",
         },
         {
           key: "api · production",
@@ -675,9 +691,10 @@ export default function WallboardPage() {
               )}
               {feed.slice(0, 12).map((e) => (
                 <div key={e.id} className="flex items-start gap-[0.45em] text-[0.68em]">
-                  <span
-                    className="mt-[0.4em] h-[0.45em] w-[0.45em] shrink-0 rounded-full"
-                    style={{ background: FEED_COLORS[e.kind] }}
+                  <SourceIcon
+                    kind={e.kind}
+                    color={FEED_COLORS[e.kind]}
+                    className="mt-[0.22em] h-[0.85em] w-[0.85em] shrink-0"
                   />
                   <div className="min-w-0 leading-snug">
                     <div className="truncate">

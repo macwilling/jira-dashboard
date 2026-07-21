@@ -7,6 +7,8 @@ export type FeedKind =
   | "assignee"
   | "new"
   | "pr-open"
+  | "pr-draft"
+  | "pr-approved"
   | "pr-merged"
   | "pr-closed"
   | "deploy-start"
@@ -43,8 +45,10 @@ export const FEED_COLORS: Record<FeedKind, string> = {
   assignee: "#d29922",
   new: "#3fb950",
   "pr-open": "#3fb950",
+  "pr-draft": "#8b949e",
+  "pr-approved": "#3fb950",
   "pr-merged": "#a371f7",
-  "pr-closed": "#8b949e",
+  "pr-closed": "#f85149",
   "deploy-start": "#4493f8",
   "deploy-ok": "#3fb950",
   "deploy-fail": "#f85149",
@@ -140,6 +144,57 @@ export function diffSnapshots(
   }
 
   return events;
+}
+
+/**
+ * Changelog field (lowercased) that identifies the actor for each diffed
+ * event kind. Comments already carry their author from the tickets payload.
+ */
+const ACTOR_FIELD: Partial<Record<FeedKind, string>> = {
+  status: "status",
+  priority: "priority",
+  assignee: "assignee",
+  new: "sprint",
+};
+
+/**
+ * diffSnapshots can only guess `who` from the ticket's assignee — the
+ * snapshot diff has no record of the actor. This pass fetches the changelog
+ * for just the changed tickets and stamps the real author onto each event
+ * (newest matching entry wins). Falls back to the guess if the changelog
+ * is unavailable or has no matching entry.
+ */
+export async function resolveEventActors(
+  events: FeedEvent[]
+): Promise<FeedEvent[]> {
+  const keys = [...new Set(events.filter((e) => ACTOR_FIELD[e.kind]).map((e) => e.key))];
+  if (keys.length === 0) return events;
+
+  const logs = new Map<string, ChangelogEntry[]>();
+  await Promise.all(
+    keys.map(async (key) => {
+      try {
+        const res = await fetch(
+          `/api/jira/changelog?key=${encodeURIComponent(key)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        logs.set(key, (data.changelog ?? []) as ChangelogEntry[]);
+      } catch {
+        // keep the assignee guess for this ticket
+      }
+    })
+  );
+
+  return events.map((e) => {
+    const field = ACTOR_FIELD[e.kind];
+    if (!field) return e;
+    // Entries are newest-first — the first matching one is the change we saw
+    const entry = logs
+      .get(e.key)
+      ?.find((en) => en.changes.some((c) => c.field.toLowerCase() === field));
+    return entry?.authorName ? { ...e, who: entry.authorName } : e;
+  });
 }
 
 const SEED_WINDOW_MS = 24 * 60 * 60 * 1000;

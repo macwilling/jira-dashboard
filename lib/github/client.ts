@@ -10,10 +10,18 @@ interface GitHubPR {
   merged_at: string | null;
   closed_at: string | null;
   updated_at: string;
+  draft?: boolean;
   user: {
     login: string;
     name?: string | null;
   } | null;
+}
+
+interface GitHubReview {
+  id: number;
+  state: string; // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
+  submitted_at?: string;
+  user: { login: string } | null;
 }
 
 interface GitHubUser {
@@ -194,7 +202,14 @@ export async function fetchRepoActivity(
       actor: pr.user?.login ?? null,
     };
     if (new Date(pr.created_at).getTime() >= sinceMs) {
-      events.push({ ...base, id: `${repo}#${pr.number}-open`, kind: "pr-open", at: pr.created_at });
+      // `draft` reflects the PR's current state — a draft later marked ready
+      // shows as a regular open on the next poll (no timestamp for the flip)
+      events.push({
+        ...base,
+        id: `${repo}#${pr.number}-open`,
+        kind: pr.draft && !pr.closed_at ? "pr-draft" : "pr-open",
+        at: pr.created_at,
+      });
     }
     if (pr.merged_at && new Date(pr.merged_at).getTime() >= sinceMs) {
       events.push({ ...base, id: `${repo}#${pr.number}-merged`, kind: "pr-merged", at: pr.merged_at });
@@ -206,6 +221,33 @@ export async function fetchRepoActivity(
       events.push({ ...base, id: `${repo}#${pr.number}-closed`, kind: "pr-closed", at: pr.closed_at });
     }
   }
+
+  // Approval events: chase reviews only for PRs updated inside the window,
+  // capped so each poll stays cheap against the rate limit
+  const recentlyUpdated = prs
+    .filter((pr) => new Date(pr.updated_at).getTime() >= sinceMs)
+    .slice(0, 20);
+  await Promise.all(
+    recentlyUpdated.map(async (pr) => {
+      const reviews = await ghGet<GitHubReview[]>(
+        `/repos/${GITHUB_ORG}/${repo}/pulls/${pr.number}/reviews?per_page=30`,
+        token
+      ).catch(() => [] as GitHubReview[]);
+      for (const review of reviews) {
+        if (review.state !== "APPROVED" || !review.submitted_at) continue;
+        if (new Date(review.submitted_at).getTime() < sinceMs) continue;
+        events.push({
+          repo,
+          label: `${short}#${pr.number}`,
+          title: pr.title,
+          actor: review.user?.login ?? null,
+          id: `${repo}#${pr.number}-approved-${review.id}`,
+          kind: "pr-approved",
+          at: review.submitted_at,
+        });
+      }
+    })
+  );
 
   // Only chase statuses for recent deployments to keep the call count low
   const recentDeploys = deployments

@@ -29,6 +29,8 @@ export interface RepoEvent {
   id: string; // stable across polls — used for client-side dedupe
   kind:
     | "pr-open"
+    | "pr-draft"
+    | "pr-approved"
     | "pr-merged"
     | "pr-closed"
     | "deploy-start"
