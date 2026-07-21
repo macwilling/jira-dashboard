@@ -395,9 +395,19 @@ export function mapChangelog(histories: JiraChangelogHistory[]): ChangelogEntry[
 
 export function mapJiraIssue(
   issue: JiraIssue,
-  l2Patterns: string[]
+  l2Patterns: string[],
+  sprintFieldId?: string
 ): Ticket {
   const fields = issue.fields;
+
+  // Sprint membership: with the dashboard JQL, L2 tickets ride along only
+  // when their sprint field is EMPTY, so a non-empty sprint field means the
+  // ticket is genuinely in the (open) sprint.
+  const sprintFieldKey = sprintFieldId || "customfield_10020";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sprintValue = ((fields as any)[sprintFieldKey] ??
+    fields.customfield_10020) as unknown[] | null | undefined;
+  const inSprint = Array.isArray(sprintValue) && sprintValue.length > 0;
   const l2PatternsLower = l2Patterns.map((p) => p.toLowerCase());
   const isL2 = fields.labels.some((label) =>
     l2PatternsLower.includes(label.toLowerCase())
@@ -408,10 +418,15 @@ export function mapJiraIssue(
   let epicName: string | null = null;
   let epicColor: string | null = null;
 
+  let parentKey: string | null = null;
   if (fields.parent && fields.parent.fields.issuetype.name === "Epic") {
     epicKey = fields.parent.key;
     epicName = fields.parent.fields.summary;
-  } else if (fields.customfield_10014) {
+  } else if (fields.parent) {
+    // Non-Epic parent = this is a subtask of a story/task/bug
+    parentKey = fields.parent.key;
+  }
+  if (!epicName && fields.customfield_10014) {
     epicName = fields.customfield_10014;
   }
 
@@ -439,6 +454,7 @@ export function mapJiraIssue(
     priority: mapJiraPriority(fields.priority?.name || "Medium"),
     type: mapJiraType(fields.issuetype.name),
     assigneeId: fields.assignee?.accountId || "unassigned",
+    parentKey,
     epicKey,
     epicName,
     epicColor,
@@ -447,6 +463,7 @@ export function mapJiraIssue(
     description: adfToMarkdown(fields.description, attachmentMap),
     lastActivityDate: fields.updated,
     isL2,
+    inSprint,
     comments: (fields.comment?.comments || []).map((c) => mapComment(c, attachmentMap)),
     links: mapIssueLinks(fields.issuelinks || []),
   };

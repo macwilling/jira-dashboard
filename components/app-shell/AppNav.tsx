@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   GitCommit,
   GitPullRequest,
+  Bug,
   Settings,
   ChevronsLeft,
   ChevronsRight,
@@ -15,6 +16,7 @@ import {
   Tags,
   Library,
   FolderOpen,
+  Tv,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTicketData } from "@/lib/ticket-data-context";
@@ -90,6 +92,7 @@ export function AppNav({
       label: "Delivery",
       items: [
         { href: "/github", label: "GitHub", icon: GitPullRequest },
+        { href: "/bug-backlog", label: "Bug Backlog", icon: Bug },
         {
           href: "/releases",
           label: "Releases",
@@ -129,7 +132,10 @@ export function AppNav({
     ...groups,
     {
       label: "Tools",
-      items: [{ href: "/files", label: "Files", icon: FolderOpen }],
+      items: [
+        { href: "/wallboard", label: "Wallboard", icon: Tv },
+        { href: "/files", label: "Files", icon: FolderOpen },
+      ],
     },
   ];
 

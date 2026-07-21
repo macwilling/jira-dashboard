@@ -36,6 +36,8 @@ export interface Ticket {
   priority: TicketPriority;
   type: TicketType;
   assigneeId: string;
+  /** Parent issue key for subtasks (non-Epic parent), used to group work by story. */
+  parentKey?: string | null;
   epicKey: string | null;
   epicName: string | null;
   epicColor: string | null;
@@ -44,6 +46,8 @@ export interface Ticket {
   description: string;
   lastActivityDate: string;
   isL2: boolean;
+  /** True when the ticket's sprint field is non-empty (i.e. it's on the sprint board). */
+  inSprint?: boolean;
   comments: Comment[];
   links: TicketLinkDef[];
 }

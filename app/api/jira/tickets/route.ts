@@ -35,7 +35,9 @@ export async function GET() {
 
     const issues = await searchAllIssues(config.jqlFilter, sprintFieldId);
     const l2Patterns = config.l2LabelPatterns || [];
-    const tickets = issues.map((issue) => mapJiraIssue(issue, l2Patterns));
+    const tickets = issues.map((issue) =>
+      mapJiraIssue(issue, l2Patterns, sprintFieldId)
+    );
 
     // Fetch real epic colors from Jira Agile API
     const epicKeys = Array.from(new Set(tickets.filter((t) => t.epicKey).map((t) => t.epicKey!)));

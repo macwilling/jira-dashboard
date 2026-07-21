@@ -1,4 +1,4 @@
-import { PRRecord } from "./types";
+import { PRRecord, PRSummary, RepoEvent } from "./types";
 
 const GITHUB_ORG = "sysdynetechnologies";
 
@@ -6,7 +6,9 @@ interface GitHubPR {
   number: number;
   title: string;
   html_url: string;
+  created_at: string;
   merged_at: string | null;
+  closed_at: string | null;
   updated_at: string;
   user: {
     login: string;
@@ -109,4 +111,172 @@ export async function fetchMergedPRs(
   );
 
   return results.map((r) => ({ ...r, authorName: nameMap.get(r.author) ?? r.author }));
+}
+
+async function listPRs(
+  repo: string,
+  params: string,
+  token: string
+): Promise<GitHubPR[]> {
+  const url = `https://api.github.com/repos/${GITHUB_ORG}/${repo}/pulls?${params}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `GitHub API error for ${repo}: ${res.status} ${res.statusText}`
+    );
+  }
+  return res.json();
+}
+
+async function ghGet<T>(url: string, token: string): Promise<T> {
+  const full = url.startsWith("https://") ? url : `https://api.github.com${url}`;
+  const res = await fetch(full, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub API error: ${res.status} ${res.statusText} (${url})`);
+  }
+  return res.json();
+}
+
+interface GitHubDeployment {
+  id: number;
+  environment: string;
+  created_at: string;
+  description: string | null;
+  ref: string;
+  statuses_url: string;
+  creator: { login: string } | null;
+}
+
+interface GitHubDeploymentStatus {
+  state: string; // success | failure | error | in_progress | queued | pending | inactive
+  created_at: string;
+}
+
+/**
+ * PR + deployment events for one repo since `since`, for the wallboard
+ * activity feed. Deployments require the pipeline to create GitHub
+ * Deployment records — repos that deploy another way simply yield none.
+ */
+export async function fetchRepoActivity(
+  repo: string,
+  since: Date,
+  token: string
+): Promise<RepoEvent[]> {
+  const sinceMs = since.getTime();
+  const short = repo.replace(/^istrada-/, "");
+  const events: RepoEvent[] = [];
+
+  const [prs, deployments] = await Promise.all([
+    listPRs(repo, "state=all&sort=updated&direction=desc&per_page=50", token),
+    ghGet<GitHubDeployment[]>(
+      `/repos/${GITHUB_ORG}/${repo}/deployments?per_page=10`,
+      token
+    ).catch(() => [] as GitHubDeployment[]),
+  ]);
+
+  for (const pr of prs) {
+    const base = {
+      repo,
+      label: `${short}#${pr.number}`,
+      title: pr.title,
+      actor: pr.user?.login ?? null,
+    };
+    if (new Date(pr.created_at).getTime() >= sinceMs) {
+      events.push({ ...base, id: `${repo}#${pr.number}-open`, kind: "pr-open", at: pr.created_at });
+    }
+    if (pr.merged_at && new Date(pr.merged_at).getTime() >= sinceMs) {
+      events.push({ ...base, id: `${repo}#${pr.number}-merged`, kind: "pr-merged", at: pr.merged_at });
+    } else if (
+      pr.closed_at &&
+      !pr.merged_at &&
+      new Date(pr.closed_at).getTime() >= sinceMs
+    ) {
+      events.push({ ...base, id: `${repo}#${pr.number}-closed`, kind: "pr-closed", at: pr.closed_at });
+    }
+  }
+
+  // Only chase statuses for recent deployments to keep the call count low
+  const recentDeploys = deployments
+    .filter((d) => new Date(d.created_at).getTime() >= sinceMs - 6 * 3_600_000)
+    .slice(0, 5);
+  await Promise.all(
+    recentDeploys.map(async (d) => {
+      const base = {
+        repo,
+        label: `${short} · ${d.environment}`,
+        title: d.description || `${repo} deploy of ${d.ref}`,
+        actor: d.creator?.login ?? null,
+      };
+      if (new Date(d.created_at).getTime() >= sinceMs) {
+        events.push({ ...base, id: `deploy-${d.id}-start`, kind: "deploy-start", at: d.created_at });
+      }
+      const statuses = await ghGet<GitHubDeploymentStatus[]>(
+        `${d.statuses_url}?per_page=10`,
+        token
+      ).catch(() => [] as GitHubDeploymentStatus[]);
+      const terminal = statuses.find(
+        (s) => s.state === "success" || s.state === "failure" || s.state === "error"
+      );
+      if (terminal && new Date(terminal.created_at).getTime() >= sinceMs) {
+        events.push({
+          ...base,
+          id: `deploy-${d.id}-${terminal.state}`,
+          kind: terminal.state === "success" ? "deploy-ok" : "deploy-fail",
+          at: terminal.created_at,
+        });
+      }
+    })
+  );
+
+  return events;
+}
+
+/**
+ * Aggregates the wallboard PR stats for one repo: open count, average open-PR
+ * age, opened since `since`, merged since `since`. `since` is the viewer's
+ * local start-of-day so "today" matches the office clock, not UTC.
+ */
+export async function fetchPRSummary(
+  repo: string,
+  since: Date,
+  token: string
+): Promise<PRSummary> {
+  const [open, recentlyCreated, mergedToday] = await Promise.all([
+    listPRs(repo, "state=open&per_page=100", token),
+    listPRs(repo, "state=all&sort=created&direction=desc&per_page=100", token),
+    fetchMergedPRs(repo, since, token),
+  ]);
+
+  const sinceMs = since.getTime();
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  return {
+    openCount: open.length,
+    avgOpenAgeDays:
+      open.length === 0
+        ? 0
+        : open.reduce(
+            (sum, pr) => sum + (now - new Date(pr.created_at).getTime()),
+            0
+          ) /
+          open.length /
+          dayMs,
+    openedToday: recentlyCreated.filter(
+      (pr) => new Date(pr.created_at).getTime() >= sinceMs
+    ).length,
+    mergedToday: mergedToday.length,
+  };
 }

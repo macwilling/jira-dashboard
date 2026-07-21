@@ -48,6 +48,7 @@ SWR (5min poll) → /api/jira/tickets → Jira Cloud REST API
 - `/changes`, `/risks` — Standup-support views (recent ticket changes, at-risk tickets)
 - `/releases`, `/releases/workflows`, `/releases/categories`, `/releases/task-library` — Release pipeline + config; see `docs/release-flow.md`
 - `/github` — PR statistics (heatmap / by-contributor / over-time)
+- `/wallboard` — full-screen TV dashboard (no AppShell chrome): story-grouped momentum sprint board (subtasks attach to stories via `Ticket.parentKey`; Jira statuses map to display stages in `app/wallboard/stages.ts` — Resolved="Code Review", unknown="Done"), change feed with toasts/ding, GitHub PR KPIs (`/api/github/prs/summary`), Datadog RUM insights (`/api/datadog/insights`, `lib/datadog/client.ts`). Polls tickets every 60s (shares the provider's SWR cache key), stats every 5 min; change detection is a client-side snapshot diff (`app/wallboard/feed.ts`)
 - `/files` — S3 file upload + public-link sharing
 - `/settings` — Configuration UI for JQL filter, L2 labels, sprint field
 
@@ -108,5 +109,6 @@ Required/optional in `.env.local` (see `.env.example` for the full annotated lis
 - `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME` — `/files` page.
 - `FRESHDESK_DOMAIN`, `FRESHDESK_API_KEY` — Freshdesk support-ticket lookups.
 - `READAI_WEBHOOK_SIGNING_KEY` (or `READAI_WEBHOOK_SECRET` fallback), `CLAUDE_ROUTINE_ID`, `CLAUDE_ROUTINE_TOKEN` — Read AI webhook → Claude routine bridge.
-- `GITHUB_TOKEN` — `/github` PR stats.
+- `GITHUB_TOKEN` — `/github` PR stats + `/wallboard` PR KPIs.
+- `DATADOG_ACCESS_TOKEN` (PAT, preferred) or `DATADOG_API_KEY` + `DATADOG_APP_KEY` (+ optional `DATADOG_SITE`, `DATADOG_RUM_APP_ID`, `DATADOG_RUM_USER_FIELD`) — `/wallboard` RUM product insights.
 - `NEXT_PUBLIC_APP_URL` — public origin, used in Slack "View in app" links and the interactive Request URL.
