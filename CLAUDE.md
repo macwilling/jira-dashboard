@@ -78,6 +78,7 @@ Slack slash command → modal flow that files Jira issues (and links Freshdesk t
 - **`lib/google/client.ts`** + `app/api/auth/google/` — Google OAuth; Tasks + Calendar for release task dispatch.
 - **`lib/github/client.ts`** + `app/api/github/prs/` — GitHub PR stats (classic PAT, repo scope, read-only).
 - **AWS S3** (`@aws-sdk/client-s3`) — backs `/files`; presigned URLs for a public-read bucket.
+- **Read AI → Claude routine bridge** (`app/api/webhooks/readai/route.ts`, `lib/readai/`) — receives Read AI meeting-completed webhooks (HMAC-verified via `X-Read-Signature`, KV-deduped on `request_id`), flattens the report into a markdown digest, and fires a claude.ai routine (`POST api.anthropic.com/v1/claude_code/routines/{id}/fire`) whose Claude session writes the meeting note to the Obsidian vault.
 
 ### UI Components
 
@@ -106,5 +107,6 @@ Required/optional in `.env.local` (see `.env.example` for the full annotated lis
 - `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` — Slack notifications + interactive components.
 - `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME` — `/files` page.
 - `FRESHDESK_DOMAIN`, `FRESHDESK_API_KEY` — Freshdesk support-ticket lookups.
+- `READAI_WEBHOOK_SIGNING_KEY` (or `READAI_WEBHOOK_SECRET` fallback), `CLAUDE_ROUTINE_ID`, `CLAUDE_ROUTINE_TOKEN` — Read AI webhook → Claude routine bridge.
 - `GITHUB_TOKEN` — `/github` PR stats.
 - `NEXT_PUBLIC_APP_URL` — public origin, used in Slack "View in app" links and the interactive Request URL.
