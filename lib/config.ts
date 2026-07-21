@@ -12,6 +12,20 @@ export interface DashboardConfig {
    * Per-workflow approval targets live on the workflow record itself.
    */
   releaseAdminSlackTarget?: string;
+  /**
+   * Bug-backlog analytics (/bug-backlog). All optional — the metrics layer
+   * falls back to sensible defaults (project IST, standard bug status sets).
+   */
+  bugProjectKey?: string; // defaults to "IST"
+  /**
+   * Label prefixes whose bugs are excluded from the "real fix" close count.
+   * Cleanup passes stamp dated labels (backlog-cleanup-MM_DD_YY,
+   * backlog-bankruptcy-YYYY-MM); prefixes are expanded to concrete labels at
+   * query time. Defaults to ["backlog-cleanup", "backlog-bankruptcy"].
+   */
+  bugCleanupLabelPrefixes?: string[];
+  bugOpenStatuses?: string[]; // override the default open-status set
+  bugDoneStatuses?: string[]; // override the default done-status set
 }
 
 const CONFIG_KEY = "dashboard-config";

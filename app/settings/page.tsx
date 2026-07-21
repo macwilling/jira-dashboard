@@ -21,6 +21,8 @@ interface ConfigStatus {
     standupTime?: string;
     standupTimezone?: string;
     releaseAdminSlackTarget?: string;
+    bugProjectKey?: string;
+    bugCleanupLabelPrefixes?: string[];
   } | null;
 }
 
@@ -58,6 +60,8 @@ export default function SettingsPage() {
   const [standupTime, setStandupTime] = useState("09:00");
   const [standupTimezone, setStandupTimezone] = useState("");
   const [releaseApprovalTarget, setReleaseApprovalTarget] = useState("");
+  const [bugProjectKey, setBugProjectKey] = useState("");
+  const [bugCleanupPrefixes, setBugCleanupPrefixes] = useState("");
   const [approvalTestSending, setApprovalTestSending] = useState(false);
   const [approvalTestResult, setApprovalTestResult] = useState<
     | { kind: "sent"; warnings: string[] }
@@ -103,6 +107,10 @@ export default function SettingsPage() {
           setStandupTime(data.config.standupTime || "09:00");
           setStandupTimezone(data.config.standupTimezone || "");
           setReleaseApprovalTarget(data.config.releaseAdminSlackTarget || "");
+          setBugProjectKey(data.config.bugProjectKey || "");
+          setBugCleanupPrefixes(
+            (data.config.bugCleanupLabelPrefixes || []).join(", ")
+          );
         }
       })
       .catch(() => {})
@@ -131,6 +139,13 @@ export default function SettingsPage() {
           ...(releaseApprovalTarget.trim()
             ? { releaseAdminSlackTarget: releaseApprovalTarget.trim() }
             : { releaseAdminSlackTarget: "" }),
+          ...(bugProjectKey.trim()
+            ? { bugProjectKey: bugProjectKey.trim() }
+            : {}),
+          bugCleanupLabelPrefixes: bugCleanupPrefixes
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
         }),
       });
       if (res.ok) setSaved(true);
@@ -582,6 +597,56 @@ export default function SettingsPage() {
                   className="text-xs font-mono"
                 />
               </div>
+            </div>
+          </div>
+        </section>
+
+        {/* BUG BACKLOG */}
+        <section className="space-y-3">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Bug Backlog
+            </h2>
+            <p className="text-xxs text-muted-foreground mt-1">
+              Configures the bug-backlog analytics page. Metrics are derived from
+              the status timeline, not resolved-date.
+            </p>
+          </div>
+
+          <div className="rounded-lg border p-4 space-y-5">
+            <div className="space-y-1.5 max-w-xs">
+              <Label htmlFor="bugProject" className="text-xs">Project Key</Label>
+              <Input
+                id="bugProject"
+                value={bugProjectKey}
+                onChange={(e) => setBugProjectKey(e.target.value)}
+                placeholder="IST"
+                className="text-xs font-mono"
+              />
+              <p className="text-xxs text-muted-foreground">
+                Jira project to compute bug metrics for. Defaults to{" "}
+                <code className="bg-muted px-1 rounded">IST</code>.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="bugCleanup" className="text-xs">
+                Cleanup Label Prefixes
+              </Label>
+              <Input
+                id="bugCleanup"
+                value={bugCleanupPrefixes}
+                onChange={(e) => setBugCleanupPrefixes(e.target.value)}
+                placeholder="backlog-cleanup, backlog-bankruptcy"
+                className="text-xs font-mono"
+              />
+              <p className="text-xxs text-muted-foreground">
+                Comma-separated label prefixes. Bugs carrying a matching label
+                are excluded from the &quot;closed (real fix)&quot; count, so
+                periodic backlog-cleanup passes don&apos;t inflate the fix rate.
+                Prefixes are expanded to concrete labels at query time. Leave
+                empty to use the defaults.
+              </p>
             </div>
           </div>
         </section>

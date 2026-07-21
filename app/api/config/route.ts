@@ -52,6 +52,17 @@ export async function POST(request: NextRequest) {
       ...(body.releaseAdminSlackTarget !== undefined
         ? { releaseAdminSlackTarget: body.releaseAdminSlackTarget || undefined }
         : {}),
+      // Bug-backlog analytics config (all optional; omit when empty so defaults apply).
+      ...(body.bugProjectKey ? { bugProjectKey: body.bugProjectKey } : {}),
+      ...(body.bugCleanupLabelPrefixes?.length
+        ? { bugCleanupLabelPrefixes: body.bugCleanupLabelPrefixes }
+        : {}),
+      ...(body.bugOpenStatuses?.length
+        ? { bugOpenStatuses: body.bugOpenStatuses }
+        : {}),
+      ...(body.bugDoneStatuses?.length
+        ? { bugDoneStatuses: body.bugDoneStatuses }
+        : {}),
     });
 
     return NextResponse.json({ ok: true });

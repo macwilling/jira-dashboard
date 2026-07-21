@@ -185,6 +185,57 @@ export async function searchText(
   return searchIssues(jql, maxResults);
 }
 
+/**
+ * Exact issue count for a JQL query. The `/search/jql` endpoint does not return
+ * a reliable `total`, so we paginate and count. Requests only `key` to keep
+ * payloads tiny — bug-backlog counts are in the hundreds, so this is cheap and
+ * exact (mirrors the Apps Script `jiraSearch_` fetch-and-count).
+ */
+export async function countIssuesByJql(jql: string): Promise<number> {
+  let count = 0;
+  let nextPageToken: string | undefined;
+
+  while (true) {
+    const params: Record<string, string> = {
+      jql,
+      fields: "key",
+      maxResults: "100",
+    };
+    if (nextPageToken) params.nextPageToken = nextPageToken;
+
+    const res = await jiraFetch<JiraSearchResponse>(
+      "/rest/api/3/search/jql",
+      params
+    );
+    count += res.issues.length;
+
+    if (res.isLast || !res.nextPageToken) break;
+    nextPageToken = res.nextPageToken;
+  }
+
+  return count;
+}
+
+/**
+ * Expand a label prefix into the concrete label names Jira knows about, via the
+ * JQL autocomplete endpoint. Used to turn a configurable prefix (e.g.
+ * "backlog-cleanup") into the exact labels needed for a `labels NOT IN (...)`
+ * clause, since JQL cannot wildcard label values.
+ */
+export async function fetchLabelSuggestions(prefix: string): Promise<string[]> {
+  try {
+    const data = await jiraFetch<{ results?: Array<{ value?: string }> }>(
+      "/rest/api/3/jql/autocompletedata/suggestions",
+      { fieldName: "labels", fieldValue: prefix }
+    );
+    return (data.results ?? [])
+      .map((r) => r.value)
+      .filter((v): v is string => typeof v === "string");
+  } catch {
+    return [];
+  }
+}
+
 // Discover the sprint custom field ID by querying Jira field metadata
 export async function discoverSprintFieldId(): Promise<string | null> {
   try {
