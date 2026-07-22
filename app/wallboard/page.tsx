@@ -39,6 +39,7 @@ const ACCENT = "#4493f8";
 const TICKETS_REFRESH_MS = 60_000;
 const STATS_REFRESH_MS = 300_000;
 const TOAST_MS = 12_000;
+const VERSION_POLL_MS = 120_000; // check for a new deploy every 2 min
 const SOUND_KEY = "wallboard-sound";
 
 const fetcher = async (url: string) => {
@@ -363,11 +364,58 @@ export default function WallboardPage() {
     });
   }, [tickets, memberName]);
 
-  // Expire toasts off the 1s tick
+  // Expire toasts off the 1s tick. Keep the same array reference when nothing
+  // expired — a fresh array every tick would churn identity and retrigger any
+  // effect that depends on `toasts` (e.g. the idle-gated reload below) every
+  // second.
   useEffect(() => {
-    setToasts((t) => t.filter((e) => nowMs - e.at < TOAST_MS));
+    setToasts((t) => {
+      const next = t.filter((e) => nowMs - e.at < TOAST_MS);
+      return next.length === t.length ? t : next;
+    });
     setMeetingToast((m) => (m && nowMs - m.at < TOAST_MS ? m : null));
   }, [nowMs]);
+
+  // ---- auto-reload on new deploy (idle-gated) ----
+  // A TV tab keeps running the JS bundle it first loaded, so a Vercel deploy
+  // won't reach it. Poll the serving deployment's id, baseline it on load, and
+  // when it changes flag an update — then reload only once nothing is on
+  // screen (see the idle gate below) so we never interrupt standup mid-toast.
+  const deployVersionRef = useRef<string | null>(null);
+  const [updatePending, setUpdatePending] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      try {
+        const res = await fetch("/api/version", { cache: "no-store" });
+        if (!res.ok) return;
+        const { version } = (await res.json()) as { version?: string };
+        if (!version || cancelled) return;
+        if (deployVersionRef.current === null) {
+          deployVersionRef.current = version; // baseline = version at load
+        } else if (version !== deployVersionRef.current) {
+          setUpdatePending(true);
+        }
+      } catch {
+        /* transient network error — try again next tick */
+      }
+    }
+    check();
+    const id = setInterval(check, VERSION_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Idle gate: reload only when no toast/meeting alert is showing, with a short
+  // settle delay so a toast landing right as we go idle cancels the reload.
+  useEffect(() => {
+    if (!updatePending) return;
+    if (toasts.length > 0 || meetingToast) return;
+    const id = setTimeout(() => window.location.reload(), 1500);
+    return () => clearTimeout(id);
+  }, [updatePending, toasts, meetingToast]);
 
   // FLIP: when the stack reflows (new toast pushes others up, or a removal
   // lets them settle down), animate siblings from their old position instead
@@ -632,6 +680,14 @@ export default function WallboardPage() {
           {soundOn && !unlocked && (
             <span className="animate-pulse text-[0.6em] text-muted-foreground">
               click anywhere to enable sound
+            </span>
+          )}
+          {updatePending && (
+            <span
+              className="animate-pulse text-[0.55em] text-muted-foreground"
+              title="A new version is deployed — reloading when idle"
+            >
+              update ready · reloading soon
             </span>
           )}
           <MeetingCountdown
