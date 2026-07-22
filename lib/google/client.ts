@@ -23,6 +23,10 @@ export const GOOGLE_SCOPES = [
   // calendar.events lets us create/update events but not list calendars —
   // we need the calendarlist.readonly scope for the picker in the template editor.
   "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+  // Full Drive access: the Read AI bridge reads the Obsidian vault tree and
+  // writes meeting notes/transcripts into it (drive.file wouldn't see
+  // pre-existing vault files). Reconnect in /settings after scope changes.
+  "https://www.googleapis.com/auth/drive",
   "openid",
   "email",
 ].join(" ");
