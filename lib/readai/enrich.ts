@@ -3,7 +3,7 @@ import type { ReadAiWebhookPayload } from "@/lib/readai/types";
 import {
   actionItemsMarkdown,
   meetingDate,
-  renderTranscript,
+  renderTranscriptClipped,
 } from "@/lib/readai/note";
 
 /**
@@ -79,14 +79,38 @@ export interface EnrichSubmission {
   related?: string;
 }
 
+/**
+ * Signed URL for GET /api/readai/transcript — lets the routine curl the FULL
+ * transcript when the payload copy had to be clipped. Returns null when the
+ * app URL or signing key isn't configured.
+ */
+export function buildTranscriptUrl(transcriptFileId: string): string | null {
+  const rawBase = process.env.NEXT_PUBLIC_APP_URL;
+  if (!rawBase) return null;
+  const base = (
+    rawBase.startsWith("http") ? rawBase : `https://${rawBase}`
+  ).replace(/\/$/, "");
+
+  const minted = mintEnrichToken(transcriptFileId);
+  if (!minted) return null;
+
+  const params = new URLSearchParams({
+    fileId: transcriptFileId,
+    exp: String(minted.exp),
+    token: minted.token,
+  });
+  return `${base}/api/readai/transcript?${params}`;
+}
+
 export function buildEnrichmentFireText(args: {
   payload: ReadAiWebhookPayload;
   noteFileId: string;
   token: string;
   exp: number;
   vaultPaths: string[];
+  transcriptUrl: string | null;
 }): string {
-  const { payload, noteFileId, token, exp, vaultPaths } = args;
+  const { payload, noteFileId, token, exp, vaultPaths, transcriptUrl } = args;
   const lines: string[] = [];
 
   lines.push("MEETING NOTE ENRICHMENT REQUEST");
@@ -104,11 +128,24 @@ export function buildEnrichmentFireText(args: {
   lines.push("== VAULT NOTES (the ONLY valid wikilink targets) ==");
   for (const path of vaultPaths) lines.push(path);
   lines.push("");
-  lines.push("== TRANSCRIPT ==");
 
-  const fixed = lines.join("\n").length + 1;
-  const transcriptBudget = Math.max(FIRE_TEXT_MAX_CHARS - fixed, 2_000);
-  lines.push(renderTranscript(payload, transcriptBudget));
+  // Render the transcript into whatever room the fixed sections leave.
+  // The placeholder keeps the budget math accurate before we know whether
+  // the transcript fits.
+  const headerPlaceholder =
+    "== TRANSCRIPT ==\ntranscript_truncated: false\nfull_transcript_url: (n/a)\n";
+  const fixed =
+    lines.join("\n").length + headerPlaceholder.length + (transcriptUrl?.length ?? 0) + 50;
+  const budget = Math.max(FIRE_TEXT_MAX_CHARS - fixed, 2_000);
+  const clipped = renderTranscriptClipped(payload, budget);
+
+  lines.push("== TRANSCRIPT ==");
+  lines.push(`transcript_truncated: ${clipped.truncated}`);
+  lines.push(
+    `full_transcript_url: ${clipped.truncated && transcriptUrl ? transcriptUrl : "(n/a)"}`,
+  );
+  lines.push("");
+  lines.push(clipped.text);
 
   const text = lines.join("\n");
   // Belt and braces: never exceed the API limit even if the fixed sections

@@ -7,6 +7,7 @@ import {
 } from "@/lib/readai/note";
 import {
   buildEnrichmentFireText,
+  buildTranscriptUrl,
   mintEnrichToken,
 } from "@/lib/readai/enrich";
 import {
@@ -176,6 +177,9 @@ export async function POST(req: NextRequest) {
           token: minted.token,
           exp: minted.exp,
           vaultPaths,
+          // Used only when the transcript doesn't fit the fire payload —
+          // the routine curls the full transcript from our signed endpoint.
+          transcriptUrl: buildTranscriptUrl(mapping.transcriptFileId),
         }),
       );
       enrichmentFired = true;

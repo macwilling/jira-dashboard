@@ -101,33 +101,64 @@ function formatSpeakerBlock(block: ReadAiSpeakerBlock): string {
     : `**${speaker}:** ${block.words}`;
 }
 
-/**
- * Renders the transcript as markdown. `maxChars` bounds the output (used for
- * the routine fire payload); pass Infinity for the full transcript file.
- */
-export function renderTranscript(
-  payload: ReadAiWebhookPayload,
-  maxChars = Infinity,
-): string {
+/** Renders the full transcript as markdown (used for the vault file — never capped). */
+export function renderTranscript(payload: ReadAiWebhookPayload): string {
   const blocks = payload.transcript?.speaker_blocks ?? [];
   if (blocks.length === 0) return "_No transcript available._";
+  return blocks.flatMap((b) => [formatSpeakerBlock(b), ""]).join("\n");
+}
 
-  const lines: string[] = [];
+export interface ClippedTranscript {
+  text: string;
+  truncated: boolean;
+}
+
+/**
+ * Renders the transcript within `maxChars` for the routine fire payload.
+ * When it doesn't fit, keeps the head (~30% of budget) and the tail (~70%)
+ * with an omission marker in between — decisions and action-item ownership
+ * cluster at the END of meetings, so the tail matters more than the middle.
+ */
+export function renderTranscriptClipped(
+  payload: ReadAiWebhookPayload,
+  maxChars: number,
+): ClippedTranscript {
+  const blocks = payload.transcript?.speaker_blocks ?? [];
+  if (blocks.length === 0) {
+    return { text: "_No transcript available._", truncated: false };
+  }
+
+  const lines = blocks.map(formatSpeakerBlock);
+  const total = lines.reduce((sum, l) => sum + l.length + 2, 0);
+  if (total <= maxChars) {
+    return { text: lines.flatMap((l) => [l, ""]).join("\n"), truncated: false };
+  }
+
+  const headBudget = Math.floor(maxChars * 0.3);
+  const tailBudget = Math.floor(maxChars * 0.7) - 200; // room for the marker
+
+  const head: string[] = [];
   let used = 0;
-  let included = 0;
-  for (const block of blocks) {
-    const line = formatSpeakerBlock(block);
-    if (used + line.length > maxChars) break;
-    lines.push(line, "");
-    used += line.length + 1;
-    included++;
+  for (const line of lines) {
+    if (used + line.length > headBudget) break;
+    head.push(line, "");
+    used += line.length + 2;
   }
-  if (included < blocks.length) {
-    lines.push(
-      `_Truncated: ${included} of ${blocks.length} speaker blocks shown; the full transcript file in the vault has the rest._`,
-    );
+
+  const tail: string[] = [];
+  used = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (used + lines[i].length > tailBudget) break;
+    tail.unshift(lines[i], "");
+    used += lines[i].length + 2;
   }
-  return lines.join("\n");
+
+  const omitted = blocks.length - head.length / 2 - tail.length / 2;
+  const marker = `_[... ${omitted} speaker blocks omitted from the middle of the meeting ...]_`;
+  return {
+    text: [...head, marker, "", ...tail].join("\n"),
+    truncated: true,
+  };
 }
 
 // ─── Previous meeting in series ────────────────────────────────────────────────
