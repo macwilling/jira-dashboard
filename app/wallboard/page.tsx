@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import useSWR from "swr";
-import { Volume2, VolumeX } from "lucide-react";
+import { CalendarClock, Volume2, VolumeX } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useTicketData } from "@/lib/ticket-data-context";
 import { Ticket } from "@/lib/types";
@@ -25,7 +25,13 @@ import {
   resolveEventActors,
   seedFeed,
 } from "./feed";
-import { isUnlocked, playDing, unlockOnGesture } from "./sound";
+import {
+  isUnlocked,
+  playAlarm,
+  playDing,
+  playStartNow,
+  unlockOnGesture,
+} from "./sound";
 import { SourceIcon } from "./source-icons";
 import { Stage, STAGE_COLORS, stageOf } from "./stages";
 
@@ -315,6 +321,13 @@ export default function WallboardPage() {
   // ---- feed: seed once, then diff every poll ----
   const [feed, setFeed] = useState<FeedEvent[]>([]);
   const [toasts, setToasts] = useState<FeedEvent[]>([]);
+  // Separate from the feed toasts — a meeting "starting now" alert, shown atop
+  // the stack with its own styling.
+  const [meetingToast, setMeetingToast] = useState<{
+    id: string;
+    summary: string;
+    at: number;
+  } | null>(null);
   const snapRef = useRef<BoardSnapshot | null>(null);
   const seededRef = useRef(false);
 
@@ -353,6 +366,7 @@ export default function WallboardPage() {
   // Expire toasts off the 1s tick
   useEffect(() => {
     setToasts((t) => t.filter((e) => nowMs - e.at < TOAST_MS));
+    setMeetingToast((m) => (m && nowMs - m.at < TOAST_MS ? m : null));
   }, [nowMs]);
 
   // FLIP: when the stack reflows (new toast pushes others up, or a removal
@@ -620,6 +634,13 @@ export default function WallboardPage() {
               click anywhere to enable sound
             </span>
           )}
+          <MeetingCountdown
+            nowMs={nowMs}
+            soundOn={soundOn}
+            onStartingNow={(id, summary) =>
+              setMeetingToast({ id, summary, at: Date.now() })
+            }
+          />
           <button
             onClick={toggleSound}
             className="text-muted-foreground transition-colors hover:text-foreground"
@@ -809,6 +830,26 @@ export default function WallboardPage() {
         ref={toastListRef}
         className="pointer-events-none absolute bottom-[0.9em] right-[0.9em] flex w-[28em] flex-col items-end gap-[0.55em]"
       >
+        {meetingToast && (
+          <div
+            key={meetingToast.id}
+            className={cn(
+              "wallboard-toast w-full rounded-xl border border-red-500/40 bg-popover px-[1em] py-[0.85em] shadow-2xl",
+              nowMs - meetingToast.at >= TOAST_MS - 1200 && "wallboard-toast-out"
+            )}
+            style={{ borderLeft: "0.3em solid rgb(239,68,68)" }}
+          >
+            <div className="flex items-center gap-[0.5em] text-[0.95em] leading-snug">
+              <CalendarClock className="h-[1.1em] w-[1.1em] shrink-0 text-red-400" />
+              <span className="font-semibold text-red-300">
+                Meeting starting now
+              </span>
+            </div>
+            <div className="mt-[0.25em] truncate text-[0.8em] font-medium text-foreground/90">
+              {meetingToast.summary}
+            </div>
+          </div>
+        )}
         {toasts.map((e) => {
           // Window must exceed the 1s clock tick, or a toast can skip the
           // exit state entirely and vanish unanimated
@@ -889,12 +930,192 @@ export default function WallboardPage() {
           from { transform: translateX(0); opacity: 1; }
           to { transform: translateX(120%); opacity: 0; }
         }
+        .wallboard-cd-pulse {
+          animation: wallboard-cd-pulse 1.6s ease-in-out infinite;
+        }
+        .wallboard-cd-pulse-fast {
+          animation: wallboard-cd-pulse 0.7s ease-in-out infinite;
+        }
+        /* Glow ring, not scale — keeps the pill footprint fixed so it never
+           grows into the volume icon beside it. red-500 = 239,68,68. */
+        @keyframes wallboard-cd-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); opacity: 0.92; }
+          50% { box-shadow: 0 0 0 2px rgba(239,68,68,0.45), 0 0 11px rgba(239,68,68,0.4); opacity: 1; }
+        }
       `}</style>
     </div>
   );
 }
 
 /* ================= subcomponents ================= */
+
+// Press "c" on the wallboard to cycle the countdown through these simulated
+// variants (then back to live data) — lets you eyeball every escalation tier
+// and hear the 1-minute alarm without waiting for a real meeting. Each entry
+// is an offset (seconds until start) that lands squarely in one tier; the
+// clock then ticks it down naturally, so you'll watch it cross into the next
+// tier too.
+const SIM_TIERS: { name: string; offset: number }[] = [
+  { name: ">10 min", offset: 15 * 60 },
+  { name: "≤10 min", offset: 8 * 60 },
+  { name: "≤5 min", offset: 4 * 60 },
+  { name: "≤2 min", offset: 110 },
+  { name: "≤1 min", offset: 45 },
+  { name: "starting now", offset: -5 },
+];
+
+/**
+ * Header meeting countdown, fed by the primary Google calendar. Stays hidden
+ * until the next meeting is within 10 minutes, then counts down mm:ss and
+ * escalates in prominence: amber ≤5m, red + gentle pulse ≤2m, red + fast pulse
+ * ≤1m (with a one-time alarm chime), "starting now" at 0. Clears ~2m after
+ * start. Shares the page's 1s `now` tick so the seconds tick without extra
+ * timers, and polls the API once a minute. Press "c" to simulate the tiers
+ * (see SIM_TIERS).
+ */
+function MeetingCountdown({
+  nowMs,
+  soundOn,
+  onStartingNow,
+}: {
+  nowMs: number;
+  soundOn: boolean;
+  onStartingNow: (id: string, summary: string) => void;
+}) {
+  const { data } = useSWR<{
+    meeting: { summary: string; startISO: string } | null;
+  }>("/api/google/calendar/next", fetcher, {
+    refreshInterval: 60_000,
+    revalidateOnFocus: false,
+  });
+  const realMeeting = data?.meeting ?? null;
+
+  // Simulation state: `pos` 0 = live data, 1..N = SIM_TIERS[pos-1]. `startMs`
+  // is captured at key press so the countdown ticks down from there.
+  const [sim, setSim] = useState<{ pos: number; startMs: number } | null>(null);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key.toLowerCase() !== "c" || e.metaKey || e.ctrlKey || e.altKey)
+        return;
+      const tgt = e.target as HTMLElement | null;
+      if (
+        tgt &&
+        (tgt.tagName === "INPUT" ||
+          tgt.tagName === "TEXTAREA" ||
+          tgt.isContentEditable)
+      )
+        return;
+      setSim((cur) => {
+        const nextPos = ((cur?.pos ?? 0) + 1) % (SIM_TIERS.length + 1);
+        if (nextPos === 0) return null; // back to live
+        return {
+          pos: nextPos,
+          startMs: Date.now() + SIM_TIERS[nextPos - 1].offset * 1000,
+        };
+      });
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const meeting = useMemo(
+    () =>
+      sim
+        ? {
+            summary: `${SIM_TIERS[sim.pos - 1].name} — simulated meeting`,
+            startISO: new Date(sim.startMs).toISOString(),
+          }
+        : realMeeting,
+    [sim, realMeeting]
+  );
+
+  const startMs = meeting ? new Date(meeting.startISO).getTime() : null;
+  const secsUntil =
+    startMs !== null ? Math.floor((startMs - nowMs) / 1000) : null;
+
+  // Fire the 1-minute alarm once per meeting; re-arms when a new meeting
+  // (different start) becomes the next one.
+  const alarmedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!meeting || secsUntil === null) return;
+    if (
+      secsUntil <= 60 &&
+      secsUntil > 0 &&
+      alarmedFor.current !== meeting.startISO
+    ) {
+      alarmedFor.current = meeting.startISO;
+      if (soundOn) playAlarm();
+    }
+  }, [meeting, secsUntil, soundOn]);
+
+  // At start (T-0): once per meeting, play the distinct "starting now" chime
+  // and raise the toast.
+  const startedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!meeting || secsUntil === null) return;
+    if (secsUntil <= 0 && startedFor.current !== meeting.startISO) {
+      startedFor.current = meeting.startISO;
+      if (soundOn) playStartNow();
+      onStartingNow(meeting.startISO, meeting.summary);
+    }
+  }, [meeting, secsUntil, soundOn, onStartingNow]);
+
+  if (!meeting || startMs === null || secsUntil === null) return null;
+  // Clear a couple minutes after start — the next poll surfaces what's next.
+  if (secsUntil < -120) return null;
+
+  const far = secsUntil > 600;
+  const clock = new Date(startMs).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const mm = Math.max(0, Math.floor(secsUntil / 60));
+  const ss = Math.max(0, secsUntil % 60);
+  const countdown = `${mm}:${ss.toString().padStart(2, "0")}`;
+
+  // Escalation ladder — a pill whose tone intensifies as the meeting nears.
+  // The red tiers add a glow pulse (footprint stays fixed; see keyframes).
+  let tone = "border-white/10 bg-white/[0.06] text-foreground/80"; // ≤10m
+  let sizeClass = "text-[0.62em]";
+  let animClass = "";
+  if (far) {
+    tone = "border-white/10 bg-white/[0.035] text-muted-foreground";
+    sizeClass = "text-[0.6em]";
+  } else if (secsUntil <= 60) {
+    tone = "border-red-500/70 bg-red-500/15 text-red-200";
+    sizeClass = "text-[0.66em] font-semibold";
+    animClass = "wallboard-cd-pulse-fast";
+  } else if (secsUntil <= 120) {
+    tone = "border-red-500/50 bg-red-500/10 text-red-300";
+    sizeClass = "text-[0.64em] font-semibold";
+    animClass = "wallboard-cd-pulse";
+  } else if (secsUntil <= 300) {
+    tone = "border-amber-500/40 bg-amber-500/10 text-amber-300";
+    sizeClass = "text-[0.64em] font-medium";
+  }
+
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-[0.4em] whitespace-nowrap rounded-full border px-[0.6em] py-[0.22em] tabular-nums transition-colors",
+        tone,
+        sizeClass,
+        animClass
+      )}
+      title={meeting.summary}
+    >
+      <CalendarClock className="h-[1.05em] w-[1.05em] shrink-0" />
+      <span className="font-sans">{meeting.summary}</span>
+      {far ? (
+        <span>{clock}</span>
+      ) : secsUntil <= 0 ? (
+        <span>starting now</span>
+      ) : (
+        <span>in {countdown}</span>
+      )}
+    </span>
+  );
+}
 
 function Panel({
   title,

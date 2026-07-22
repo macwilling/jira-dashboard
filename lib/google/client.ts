@@ -531,6 +531,70 @@ export async function updateCalendarEventDate(
   }
 }
 
+export interface UpcomingMeeting {
+  id: string;
+  summary: string;
+  startISO: string; // event start (dateTime, timed events only)
+  htmlLink: string | null;
+}
+
+/**
+ * The next timed event on the primary calendar starting at/after `now`,
+ * skipping all-day events and ones the user has declined. Returns null when
+ * nothing is coming up. Used by the wallboard meeting countdown.
+ */
+export async function getNextMeeting(): Promise<UpcomingMeeting | null> {
+  const token = await getAccessToken();
+  const nowMs = Date.now();
+  // Google's timeMin filters on event END time, so an in-progress meeting is
+  // still returned (and, being earlier by start, would mask the genuinely
+  // upcoming one). Look back a little and skip anything already started so the
+  // countdown always tracks the next *start*.
+  const timeMin = new Date(nowMs - 60 * 60_000).toISOString();
+  const params = new URLSearchParams({
+    timeMin,
+    singleEvents: "true", // expand recurring events into instances
+    orderBy: "startTime",
+    maxResults: "10",
+  });
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+  );
+  if (!res.ok) throw new Error(`Calendar API error: ${res.status}`);
+
+  const data = (await res.json()) as {
+    items?: Array<{
+      id: string;
+      status?: string;
+      summary?: string;
+      htmlLink?: string;
+      start?: { dateTime?: string; date?: string };
+      attendees?: Array<{ self?: boolean; responseStatus?: string }>;
+    }>;
+  };
+
+  for (const ev of data.items ?? []) {
+    if (ev.status === "cancelled") continue;
+    // All-day events have `date` not `dateTime` — skip; they don't "start".
+    const startISO = ev.start?.dateTime;
+    if (!startISO) continue;
+    // Skip meetings that already started more than 2 minutes ago — keeps a
+    // brief "starting now" grace while moving past in-progress ones.
+    if (new Date(startISO).getTime() < nowMs - 120_000) continue;
+    // Skip events the user has explicitly declined.
+    const self = ev.attendees?.find((a) => a.self);
+    if (self?.responseStatus === "declined") continue;
+    return {
+      id: ev.id,
+      summary: ev.summary || "(no title)",
+      startISO,
+      htmlLink: ev.htmlLink ?? null,
+    };
+  }
+  return null;
+}
+
 /** Delete a Calendar event. 404 / 410 are treated as success (already gone). */
 export async function deleteCalendarEvent(
   calendarId: string,
