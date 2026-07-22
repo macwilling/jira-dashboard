@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import useSWR from "swr";
 import { Ticket, TeamMember, Sprint } from "./types";
 import { isStale as isStaleUtil, isRecentlyChanged, getLastStandupTime } from "./utils";
@@ -55,9 +56,18 @@ const fetcher = async (url: string) => {
 };
 
 export function TicketDataProvider({ children }: { children: React.ReactNode }) {
+  // The wallboard is a full-screen TV dashboard that owns its own refresh
+  // cadence: it runs a 60s poll on this same "/api/jira/tickets" cache key
+  // (plus GitHub/Datadog polls) while it is on screen. To guarantee that the
+  // wallboard is the *only* thing polling while it is being viewed, the
+  // provider stops its own generic 5-min poll on that route. Ticket data still
+  // stays fresh there because SWR shares the cache key — the wallboard's poll
+  // updates the same entry this provider reads. Every other route keeps the
+  // normal 5-min background poll.
+  const onWallboard = usePathname() === "/wallboard";
   const { data, error, isLoading, mutate } = useSWR("/api/jira/tickets", fetcher, {
     revalidateOnFocus: false,
-    refreshInterval: 300_000, // 5 minutes
+    refreshInterval: onWallboard ? 0 : 300_000, // 0 = no poll; 5 min otherwise
     errorRetryCount: 2,
   });
 
