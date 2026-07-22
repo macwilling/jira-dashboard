@@ -12,10 +12,31 @@ interface GitHubPR {
   updated_at: string;
   draft?: boolean;
   labels?: { name: string }[];
+  body?: string | null;
+  head?: { ref?: string };
   user: {
     login: string;
     name?: string | null;
   } | null;
+}
+
+// Jira keys for this project look like IST-5584. Anchoring to the known
+// project prefix (rather than a generic [A-Z]+-\d+) avoids false positives on
+// tokens like "UTF-8" or "SHA-256" in PR bodies. Stops at the number so a
+// branch like "IST-5584-5" still resolves to "IST-5584".
+const JIRA_PROJECT_KEYS = (process.env.JIRA_PROJECT_KEY || "IST")
+  .split(",")
+  .map((k) => k.trim())
+  .filter(Boolean);
+const JIRA_KEY_RE = new RegExp(`\\b(${JIRA_PROJECT_KEYS.join("|")})-(\\d+)`, "i");
+
+/** First Jira key found across the given strings (title, branch, body), uppercased. */
+export function extractJiraKey(...sources: (string | null | undefined)[]): string | null {
+  for (const s of sources) {
+    const m = s?.match(JIRA_KEY_RE);
+    if (m) return `${m[1].toUpperCase()}-${m[2]}`;
+  }
+  return null;
 }
 
 /**
@@ -213,6 +234,7 @@ export async function fetchRepoActivity(
     const base = {
       repo,
       label: `${short}#${pr.number}`,
+      jiraKey: extractJiraKey(pr.title, pr.head?.ref, pr.body),
       title: pr.title,
       actor: pr.user?.login ?? null,
     };
@@ -254,6 +276,7 @@ export async function fetchRepoActivity(
         events.push({
           repo,
           label: `${short}#${pr.number}`,
+          jiraKey: extractJiraKey(pr.title, pr.head?.ref, pr.body),
           title: pr.title,
           actor: review.user?.login ?? null,
           id: `${repo}#${pr.number}-approved-${review.id}`,
@@ -273,6 +296,8 @@ export async function fetchRepoActivity(
       const base = {
         repo,
         label: `${short} · ${d.environment}`,
+        // Deploys aren't tied to a single Jira ticket; try the ref just in case.
+        jiraKey: extractJiraKey(d.ref),
         title: d.description || `${repo} deploy of ${d.ref}`,
         actor: d.creator?.login ?? null,
       };

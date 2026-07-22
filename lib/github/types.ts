@@ -41,6 +41,8 @@ export interface RepoEvent {
   repo: string;
   /** Short display label, e.g. "web#482" or "api · production" */
   label: string;
+  /** Jira key parsed from the PR title/branch/description, e.g. "IST-5584", if any. */
+  jiraKey: string | null;
   title: string;
   actor: string | null;
   at: string; // ISO timestamp

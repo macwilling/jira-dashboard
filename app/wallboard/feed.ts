@@ -25,6 +25,12 @@ export interface FeedEvent {
   at: number; // epoch ms
   /** Extra context, e.g. a comment-body preview. Shown on toasts. */
   detail?: string;
+  /**
+   * For GitHub events, the Jira key parsed from the PR (title/branch/body),
+   * shown alongside the PR ref. Jira-native events don't set this — their
+   * `key` is already the Jira key.
+   */
+  jiraKey?: string | null;
 }
 
 /** Flattens a markdown comment body into a short plain-text preview. */
@@ -309,4 +315,19 @@ export function relativeTime(at: number, now: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+/**
+ * Compact relative time for a fixed right-hand column ("now", "5m", "3h",
+ * "2d"). The column position implies "ago", so the word is dropped to keep
+ * the timestamp narrow and never truncated.
+ */
+export function relativeTimeShort(at: number, now: number): string {
+  const s = Math.max(0, Math.floor((now - at) / 1000));
+  if (s < 60) return "now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }

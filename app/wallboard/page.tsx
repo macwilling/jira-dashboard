@@ -21,6 +21,7 @@ import {
   buildSnapshot,
   diffSnapshots,
   relativeTime,
+  relativeTimeShort,
   resolveEventActors,
   seedFeed,
 } from "./feed";
@@ -59,6 +60,7 @@ interface GitHubActivityEvent {
     | "deploy-fail";
   repo: string;
   label: string;
+  jiraKey: string | null;
   title: string;
   actor: string | null;
   at: string;
@@ -501,6 +503,7 @@ export default function WallboardPage() {
       const feedEvents: FeedEvent[] = fresh.map((e) => ({
         id: e.id,
         key: e.label,
+        jiraKey: e.jiraKey,
         summary: e.title,
         kind: e.kind,
         text: GITHUB_EVENT_TEXT[e.kind],
@@ -744,7 +747,7 @@ export default function WallboardPage() {
         <div className="flex min-w-0 flex-1 flex-col gap-[0.7em]">
           <PullRequestsPanel gh={gh} />
 
-          <Panel title="Recent Changes" className="min-h-0 flex-1" dotColor={ACCENT}>
+          <Panel title="Activity Feed" className="min-h-0 flex-1" dotColor={ACCENT}>
             <div className="flex min-h-0 flex-1 flex-col gap-[0.5em] overflow-hidden">
               {feed.length === 0 && (
                 <span className="text-[0.68em] text-muted-foreground">
@@ -752,22 +755,46 @@ export default function WallboardPage() {
                 </span>
               )}
               {feed.slice(0, 16).map((e) => (
-                <div key={e.id} className="flex items-start gap-[0.45em] text-[0.68em]">
+                // One row per activity, newest first. The per-kind icon marks
+                // the activity type (git PR state, deploy, Jira change); the
+                // change text is the emphasized line, with who + title below.
+                <div
+                  key={e.id}
+                  className="flex items-start gap-[0.55em] text-[0.68em]"
+                >
                   <SourceIcon
                     kind={e.kind}
                     color={FEED_COLORS[e.kind]}
-                    className="mt-[0.22em] h-[0.85em] w-[0.85em] shrink-0"
+                    className="mt-[0.15em] h-[0.95em] w-[0.95em] shrink-0"
                   />
-                  <div className="min-w-0 leading-snug">
-                    <div className="truncate">
-                      <span className="font-mono font-bold" style={{ color: ACCENT }}>
-                        {e.key}
-                      </span>{" "}
-                      <span className="text-foreground/90">{e.summary}</span>
+                  <div className="min-w-0 flex-1 leading-snug">
+                    {/* line 1: which item · WHAT CHANGED · when */}
+                    <div className="flex items-baseline gap-[0.4em]">
+                      <span
+                        className="shrink-0 font-mono font-bold"
+                        style={{ color: ACCENT }}
+                      >
+                        {e.jiraKey ?? e.key}
+                      </span>
+                      {e.jiraKey && (
+                        <span className="shrink-0 font-mono text-[0.9em] text-muted-foreground">
+                          {e.key}
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1 truncate font-semibold text-foreground">
+                        {e.text}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-[0.85em] text-muted-foreground">
+                        {relativeTimeShort(e.at, nowMs)}
+                      </span>
                     </div>
+                    {/* line 2: who + ticket/PR title */}
                     <div className="truncate text-[0.85em] text-muted-foreground">
-                      {e.text}
-                      {e.who ? ` · ${e.who}` : ""} · {relativeTime(e.at, nowMs)}
+                      {e.who && (
+                        <span className="text-foreground/70">{e.who}</span>
+                      )}
+                      {e.who ? " · " : ""}
+                      {e.summary}
                     </div>
                   </div>
                 </div>
@@ -803,8 +830,13 @@ export default function WallboardPage() {
                   className="h-[1em] w-[1em] shrink-0"
                 />
                 <span className="shrink-0 font-mono font-bold" style={{ color: ACCENT }}>
-                  {e.key}
+                  {e.jiraKey ?? e.key}
                 </span>
+                {e.jiraKey && (
+                  <span className="shrink-0 font-mono text-[0.85em] text-muted-foreground">
+                    {e.key}
+                  </span>
+                )}
                 <span className="min-w-0 truncate font-semibold">{e.text}</span>
                 <span className="ml-auto shrink-0 text-[0.75em] text-muted-foreground">
                   {relativeTime(e.at, nowMs)}
