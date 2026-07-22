@@ -132,9 +132,14 @@ export function diffSnapshots(
     }
     if (t.comments.length > before.commentCount) {
       const latest = t.comments[t.comments.length - 1];
+      // Prefer the comment's real creation time so it sorts against GitHub
+      // events correctly; fall back to poll time if it's missing/unparseable.
+      const commentAt = latest ? new Date(latest.createdAt).getTime() : NaN;
+      const at = Number.isFinite(commentAt) ? commentAt : now;
       events.push({
         ...base,
-        id: `${t.key}-comment-${now}`,
+        at,
+        id: `${t.key}-comment-${at}`,
         kind: "comment",
         text: "new comment",
         who: latest ? memberName(latest.authorId) : null,
@@ -158,11 +163,13 @@ const ACTOR_FIELD: Partial<Record<FeedKind, string>> = {
 };
 
 /**
- * diffSnapshots can only guess `who` from the ticket's assignee — the
- * snapshot diff has no record of the actor. This pass fetches the changelog
- * for just the changed tickets and stamps the real author onto each event
- * (newest matching entry wins). Falls back to the guess if the changelog
- * is unavailable or has no matching entry.
+ * diffSnapshots can only guess `who` from the ticket's assignee, and stamps
+ * events with the poll time because the snapshot diff has no record of when
+ * the change actually happened. This pass fetches the changelog for just the
+ * changed tickets and stamps the real author AND the real change time onto
+ * each event (newest matching entry wins) — the latter is what lets Jira and
+ * GitHub events interleave in true chronological order. Falls back to the
+ * guess/poll time if the changelog is unavailable or has no matching entry.
  */
 export async function resolveEventActors(
   events: FeedEvent[]
@@ -193,7 +200,13 @@ export async function resolveEventActors(
     const entry = logs
       .get(e.key)
       ?.find((en) => en.changes.some((c) => c.field.toLowerCase() === field));
-    return entry?.authorName ? { ...e, who: entry.authorName } : e;
+    if (!entry) return e;
+    const entryAt = new Date(entry.created).getTime();
+    return {
+      ...e,
+      who: entry.authorName || e.who,
+      at: Number.isFinite(entryAt) ? entryAt : e.at,
+    };
   });
 }
 
