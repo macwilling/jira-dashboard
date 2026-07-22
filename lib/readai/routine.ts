@@ -1,6 +1,7 @@
 /**
- * Fires the claude.ai routine that turns a meeting digest into an Obsidian
- * note. Uses the Claude Code routines API (beta):
+ * Fires the claude.ai routine that enriches an already-written meeting note
+ * (key decisions, action-item owners, related-note links — posted back via
+ * /api/readai/enrich). Uses the Claude Code routines API (beta):
  *   POST https://api.anthropic.com/v1/claude_code/routines/{id}/fire
  * The `text` body arrives in the routine session wrapped in a
  * <routine-fire-payload> block — the routine's saved prompt must reference
