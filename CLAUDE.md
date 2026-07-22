@@ -20,7 +20,9 @@ Jira Standup Viewer — a Next.js 14 (App Router) dashboard for facilitating scr
 
 Vitest is the test runner. Config lives in `vitest.config.mts` (must be `.mts` — the package is CommonJS and `vite-tsconfig-paths` is ESM-only); the `@/*` path alias is resolved via `vite-tsconfig-paths`. Tests are colocated next to source as `*.test.ts` / `*.test.tsx`. The default environment is `node`; a test that needs the DOM opts in with a `// @vitest-environment jsdom` pragma on the first line and uses `@testing-library/react` (jest-dom matchers are registered in `vitest.setup.ts`). Shared fixtures (e.g. `makeTicket`) live in `test/fixtures.ts`. See `docs/testing.md`.
 
-Current coverage focuses on pure logic: Jira mappers (ADF→Markdown, priority/type/status mapping), wallboard stage + feed-diff logic, shared utils, and the release-name parser. The release **orchestrator** and D1-backed stores are not yet covered — that's the highest-value area to extend next.
+Current coverage: Jira mappers (ADF→Markdown, priority/type/status mapping), wallboard stage + feed-diff logic, shared utils, the release-name parser, and the release **orchestrator** (`handleVersionEvent` control flow — every dependency mocked via `vi.mock`, so the branching is asserted in isolation). The D1-backed stores and the Slack/Google dispatchers are still uncovered — good next targets.
+
+CI runs lint, typecheck (`tsc --noEmit`), tests, and a production build on every push to `main` and every PR — see `.github/workflows/ci.yml`.
 
 The Cloudflare cron worker in `cron/` is a **separate npm package** with its own `package.json`. Deploy it with `wrangler deploy` from inside `cron/` (see `cron/README.md`).
 

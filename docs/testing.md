@@ -48,6 +48,18 @@ Pure logic that's cheap to test and high-value to protect:
 - `lib/utils.ts` — staleness, epic colors, summary-tag parsing, standup time
 - `lib/releases/matcher.ts` — release-name parsing + date math
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull
+request. Two jobs run in parallel:
+
+- **verify** — `npm run lint`, `npm run typecheck` (`tsc --noEmit`), `npm test`
+- **build** — `npm run build` (a full Next.js production build; it succeeds
+  without any secrets because all integrations read their env at request time)
+
+Both use Node 22 with npm caching. Keep them green — a red `verify` job means a
+lint error, a type error, or a failing test.
+
 ## Where to extend next
 
 The release pipeline is the area with the most real-world blast radius and the
