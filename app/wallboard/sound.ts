@@ -93,3 +93,58 @@ export function playStartNow() {
   tone(c, 1318.5, t + 0.13, 0.26, 0.055);
   tone(c, 1568.0, t + 0.26, 0.6, 0.065);
 }
+
+/** A frequency-swept tone (for whooshes / launches). */
+function sweep(
+  c: AudioContext,
+  fromFreq: number,
+  toFreq: number,
+  start: number,
+  duration: number,
+  peak: number,
+  type: OscillatorType = "triangle"
+) {
+  const osc = c.createOscillator();
+  const gain = c.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(fromFreq, start);
+  osc.frequency.exponentialRampToValueAtTime(toFreq, start + duration);
+  gain.gain.setValueAtTime(0, start);
+  gain.gain.linearRampToValueAtTime(peak, start + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  osc.connect(gain).connect(c.destination);
+  osc.start(start);
+  osc.stop(start + duration + 0.05);
+}
+
+// ─── Deploy "rocket launch" sequence (see DeployCountdown) ──────────────────
+
+/** Dramatic two-tone klaxon that kicks off the deploy countdown. */
+export function playDeployAlert() {
+  const c = getContext();
+  if (!c || c.state !== "running") return;
+  const t = c.currentTime;
+  tone(c, 440.0, t, 0.16, 0.09);
+  tone(c, 587.33, t + 0.19, 0.16, 0.09);
+  tone(c, 440.0, t + 0.38, 0.16, 0.09);
+  tone(c, 587.33, t + 0.57, 0.24, 0.09);
+}
+
+/** One countdown blip; pitch rises as `remaining` drops for mounting tension. */
+export function playCountdownBeep(remaining: number) {
+  const c = getContext();
+  if (!c || c.state !== "running") return;
+  const t = c.currentTime;
+  const freq = 620 + (5 - Math.min(5, Math.max(0, remaining))) * 105;
+  tone(c, freq, t, 0.13, 0.085);
+}
+
+/** The blastoff — a rising whoosh capped with a bright pop. */
+export function playLaunch() {
+  const c = getContext();
+  if (!c || c.state !== "running") return;
+  const t = c.currentTime;
+  sweep(c, 260, 1650, t, 0.5, 0.1);
+  tone(c, 1568.0, t + 0.5, 0.45, 0.09);
+  tone(c, 2093.0, t + 0.62, 0.5, 0.06);
+}

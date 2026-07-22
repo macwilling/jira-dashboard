@@ -28,7 +28,10 @@ import {
 import {
   isUnlocked,
   playAlarm,
+  playCountdownBeep,
+  playDeployAlert,
   playDing,
+  playLaunch,
   playStartNow,
   unlockOnGesture,
 } from "./sound";
@@ -383,6 +386,7 @@ export default function WallboardPage() {
   // screen (see the idle gate below) so we never interrupt standup mid-toast.
   const deployVersionRef = useRef<string | null>(null);
   const [updatePending, setUpdatePending] = useState(false);
+  const [reloading, setReloading] = useState(false);
   useEffect(() => {
     let cancelled = false;
     async function check() {
@@ -408,14 +412,14 @@ export default function WallboardPage() {
     };
   }, []);
 
-  // Idle gate: reload only when no toast/meeting alert is showing, with a short
-  // settle delay so a toast landing right as we go idle cancels the reload.
+  // Idle gate: kick off the dramatic reload sequence only when no toast/meeting
+  // alert is showing, so we never cover the board mid-standup. Once it starts
+  // it commits (DeployCountdown handles the countdown + reload).
   useEffect(() => {
-    if (!updatePending) return;
+    if (!updatePending || reloading) return;
     if (toasts.length > 0 || meetingToast) return;
-    const id = setTimeout(() => window.location.reload(), 1500);
-    return () => clearTimeout(id);
-  }, [updatePending, toasts, meetingToast]);
+    setReloading(true);
+  }, [updatePending, reloading, toasts, meetingToast]);
 
   // FLIP: when the stack reflows (new toast pushes others up, or a removal
   // lets them settle down), animate siblings from their old position instead
@@ -957,6 +961,13 @@ export default function WallboardPage() {
         })}
       </div>
 
+      {reloading && (
+        <DeployCountdown
+          soundOn={soundOn}
+          onComplete={() => window.location.reload()}
+        />
+      )}
+
       <style>{`
         .wallboard-noscrollbar { scrollbar-width: none; }
         .wallboard-noscrollbar::-webkit-scrollbar { display: none; }
@@ -998,12 +1009,106 @@ export default function WallboardPage() {
           0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); opacity: 0.92; }
           50% { box-shadow: 0 0 0 2px rgba(239,68,68,0.45), 0 0 11px rgba(239,68,68,0.4); opacity: 1; }
         }
+        /* Deploy rocket-launch overlay */
+        .wallboard-deploy-overlay {
+          animation: wallboard-deploy-in 0.35s ease-out,
+                     wallboard-deploy-vignette 1s ease-in-out infinite;
+        }
+        @keyframes wallboard-deploy-in {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes wallboard-deploy-vignette {
+          0%, 100% { box-shadow: inset 0 0 160px 30px rgba(68,147,248,0.12); }
+          50% { box-shadow: inset 0 0 240px 70px rgba(68,147,248,0.4); }
+        }
+        /* Each countdown number zooms in and settles (re-keyed per tick) */
+        .wallboard-deploy-pop {
+          animation: wallboard-deploy-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        @keyframes wallboard-deploy-pop {
+          0% { transform: scale(2.4); opacity: 0; filter: blur(6px); }
+          55% { transform: scale(0.9); opacity: 1; filter: blur(0); }
+          100% { transform: scale(1); opacity: 1; }
+        }
       `}</style>
     </div>
   );
 }
 
 /* ================= subcomponents ================= */
+
+/**
+ * Full-screen "rocket launch" overlay shown when a new deploy is detected and
+ * the board is idle. Counts 5→GO with escalating blips + a klaxon intro and a
+ * blastoff at zero, then reloads the tab. Purely for fun — it only appears on
+ * an actual deploy, which is rare.
+ */
+function DeployCountdown({
+  soundOn,
+  onComplete,
+}: {
+  soundOn: boolean;
+  onComplete: () => void;
+}) {
+  const START = 5;
+  const [count, setCount] = useState(START);
+  const done = useRef(false);
+
+  useEffect(() => {
+    if (soundOn) playDeployAlert();
+    let n = START;
+    const id = setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(id);
+        setCount(0);
+        if (soundOn) playLaunch();
+        if (!done.current) {
+          done.current = true;
+          setTimeout(onComplete, 750); // let "GO" + blastoff land
+        }
+        return;
+      }
+      setCount(n);
+      if (soundOn) playCountdownBeep(n);
+    }, 1000);
+    return () => clearInterval(id);
+    // Run once — the sequence owns its own lifecycle from here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const go = count === 0;
+  const hue = go ? "#22c55e" : ACCENT;
+
+  return (
+    <div
+      className="wallboard-deploy-overlay fixed inset-0 z-[60] flex flex-col items-center justify-center gap-[0.35em] bg-black/85 backdrop-blur-sm"
+      style={{ fontSize: "20px" }}
+    >
+      <div
+        className="text-[1.5em] font-black uppercase tracking-[0.35em]"
+        style={{ color: ACCENT, textShadow: `0 0 34px ${ACCENT}` }}
+      >
+        🚀 New Version Deployed
+      </div>
+      <div
+        key={count}
+        className="wallboard-deploy-pop font-black leading-none tabular-nums"
+        style={{
+          fontSize: "11em",
+          color: hue,
+          textShadow: `0 0 70px ${hue}, 0 0 24px ${hue}`,
+        }}
+      >
+        {go ? "GO" : count}
+      </div>
+      <div className="text-[0.95em] uppercase tracking-[0.4em] text-muted-foreground">
+        Reloading Mission Control
+      </div>
+    </div>
+  );
+}
 
 // Press "c" on the wallboard to cycle the countdown through these simulated
 // variants (then back to live data) — lets you eyeball every escalation tier
