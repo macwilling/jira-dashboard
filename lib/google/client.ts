@@ -336,6 +336,62 @@ export async function deleteGoogleTask(
   }
 }
 
+export interface DueTask {
+  id: string;
+  title: string;
+  listTitle: string;
+  /** YYYY-MM-DD — Google stores date-only dues. */
+  due: string;
+}
+
+/**
+ * Incomplete tasks across every task list due on or before `date`
+ * (YYYY-MM-DD, the viewer's local day) — today's list plus anything overdue,
+ * oldest due first. Google Tasks dues are date-only UTC stamps, so string
+ * comparison is safe. Feeds the wallboard "My Day" rail.
+ */
+export async function getTasksDueBy(date: string): Promise<DueTask[]> {
+  const token = await getAccessToken();
+  const auth = { Authorization: `Bearer ${token}` };
+
+  const listsRes = await fetch(
+    "https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=100",
+    { headers: auth, cache: "no-store" }
+  );
+  if (!listsRes.ok) throw new Error(`Tasks API error: ${listsRes.status}`);
+  const lists = ((await listsRes.json()) as { items?: TaskList[] }).items ?? [];
+
+  const perList = await Promise.all(
+    lists.map(async (l) => {
+      const params = new URLSearchParams({
+        showCompleted: "false",
+        maxResults: "100",
+        dueMax: `${date}T23:59:59.999Z`,
+      });
+      const res = await fetch(
+        `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(l.id)}/tasks?${params}`,
+        { headers: auth, cache: "no-store" }
+      );
+      if (!res.ok) return [];
+      const data = (await res.json()) as {
+        items?: Array<{ id: string; title?: string; due?: string; status?: string }>;
+      };
+      return (data.items ?? [])
+        .filter((t) => t.due && t.title && t.status !== "completed")
+        .map((t) => ({
+          id: t.id,
+          title: t.title!,
+          listTitle: l.title,
+          due: t.due!.slice(0, 10),
+        }));
+    })
+  );
+
+  return perList
+    .flat()
+    .sort((a, b) => a.due.localeCompare(b.due) || a.title.localeCompare(b.title));
+}
+
 // ─── Google Calendar API ───────────────────────────────────────────────────────
 
 export interface CalendarListEntry {
@@ -593,6 +649,83 @@ export async function getNextMeeting(): Promise<UpcomingMeeting | null> {
     };
   }
   return null;
+}
+
+export interface DayCalendarEvent {
+  id: string;
+  summary: string;
+  allDay: boolean;
+  /** dateTime ISO for timed events; YYYY-MM-DD for all-day. */
+  startISO: string;
+  endISO: string;
+  location: string | null;
+  response: "accepted" | "tentative" | "needsAction" | null;
+}
+
+/**
+ * Every event on the primary calendar in the `days`-long window starting at
+ * `dayStartISO`, expanded from recurrences and sorted by start, skipping
+ * cancelled events and ones the user declined. Feeds the wallboard's
+ * "My Day" screen (days=1), its next-workday pre-read (days=7), and the
+ * header all-meetings-done state.
+ */
+export async function getDayEvents(
+  dayStartISO: string,
+  days = 1,
+): Promise<DayCalendarEvent[]> {
+  const token = await getAccessToken();
+  const start = new Date(dayStartISO);
+  const end = new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
+  const params = new URLSearchParams({
+    timeMin: start.toISOString(),
+    timeMax: end.toISOString(),
+    singleEvents: "true",
+    orderBy: "startTime",
+    maxResults: String(Math.min(250, 50 * days)),
+  });
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+  );
+  if (!res.ok) throw new Error(`Calendar API error: ${res.status}`);
+
+  const data = (await res.json()) as {
+    items?: Array<{
+      id: string;
+      status?: string;
+      summary?: string;
+      location?: string;
+      start?: { dateTime?: string; date?: string };
+      end?: { dateTime?: string; date?: string };
+      attendees?: Array<{ self?: boolean; responseStatus?: string }>;
+    }>;
+  };
+
+  const events: DayCalendarEvent[] = [];
+  for (const ev of data.items ?? []) {
+    if (ev.status === "cancelled") continue;
+    const self = ev.attendees?.find((a) => a.self);
+    if (self?.responseStatus === "declined") continue;
+    const startISO = ev.start?.dateTime ?? ev.start?.date;
+    const endISO = ev.end?.dateTime ?? ev.end?.date;
+    if (!startISO || !endISO) continue;
+    const response =
+      self?.responseStatus === "accepted" ||
+      self?.responseStatus === "tentative" ||
+      self?.responseStatus === "needsAction"
+        ? self.responseStatus
+        : null;
+    events.push({
+      id: ev.id,
+      summary: ev.summary || "(no title)",
+      allDay: !ev.start?.dateTime,
+      startISO,
+      endISO,
+      location: ev.location ?? null,
+      response,
+    });
+  }
+  return events;
 }
 
 /** Delete a Calendar event. 404 / 410 are treated as success (already gone). */

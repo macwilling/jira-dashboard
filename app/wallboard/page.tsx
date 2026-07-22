@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import useSWR from "swr";
-import { CalendarClock, Volume2, VolumeX } from "lucide-react";
+import { CalendarCheck, CalendarClock, Volume2, VolumeX } from "lucide-react";
 import { useTicketData } from "@/lib/ticket-data-context";
 import { cn } from "@/lib/utils";
 import {
@@ -31,6 +31,14 @@ import TeamScreen, {
   TEAM_ACTIVITY_REFRESH_MS,
   teamActivityKey,
 } from "./screens/TeamScreen";
+import MyDayScreen, {
+  DayEvent,
+  MY_DAY_REFRESH_MS,
+  myDayKey,
+  TASKS_REFRESH_MS,
+  tasksKey,
+} from "./screens/MyDayScreen";
+import { localDateStr } from "./myday";
 import {
   isUnlocked,
   playAlarm,
@@ -53,7 +61,7 @@ const VERSION_POLL_MS = 120_000; // check for a new deploy every 2 min
 const SOUND_KEY = "wallboard-sound";
 
 // Full-screen views the wallboard rotates through (below the top toolbar).
-const SCREENS = ["sprint", "team"] as const;
+const SCREENS = ["sprint", "team", "myday"] as const;
 type Screen = (typeof SCREENS)[number];
 const ROTATE_MS = 25_000; // dwell per screen before rotating
 
@@ -219,6 +227,12 @@ export default function WallboardPage() {
   // poison this cache entry with a ticket-shaped fallback.
   useSWR(teamActivityKey(dayStartISO), (url: string) => fetch(url).then((r) => r.json()), {
     refreshInterval: TEAM_ACTIVITY_REFRESH_MS,
+    revalidateOnFocus: false,
+  });
+  // Same idea for the My Day screen's tasks rail (its calendar key is already
+  // kept warm by MeetingCountdown below).
+  useSWR(tasksKey(localDateStr(dayStartDate)), (url: string) => fetch(url).then((r) => r.json()), {
+    refreshInterval: TASKS_REFRESH_MS,
     revalidateOnFocus: false,
   });
 
@@ -489,8 +503,8 @@ export default function WallboardPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // ---- screen rotation: Sprint ⇄ Team activity ----
-  // Auto-rotates on a timer; press 1/2 to pin a screen, 0 to resume. Never
+  // ---- screen rotation: Sprint → Team activity → My Day ----
+  // Auto-rotates on a timer; press 1/2/3 to pin a screen, 0 to resume. Never
   // rotates away while a toast/meeting alert is up, so an update is never
   // hidden mid-standup.
   const [screenIdx, setScreenIdx] = useState(0);
@@ -512,6 +526,7 @@ export default function WallboardPage() {
       if (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA") return;
       if (e.key === "1") setPinnedScreen("sprint");
       else if (e.key === "2") setPinnedScreen("team");
+      else if (e.key === "3") setPinnedScreen("myday");
       else if (e.key === "0") setPinnedScreen(null);
     };
     window.addEventListener("keydown", onKey);
@@ -699,6 +714,7 @@ export default function WallboardPage() {
           )}
           <MeetingCountdown
             nowMs={nowMs}
+            dayStartISO={dayStartISO}
             soundOn={soundOn}
             onStartingNow={(id, summary) =>
               setMeetingToast({ id, summary, at: Date.now() })
@@ -736,6 +752,8 @@ export default function WallboardPage() {
       >
       {screen === "team" ? (
         <TeamScreen dayStartISO={dayStartISO} />
+      ) : screen === "myday" ? (
+        <MyDayScreen dayStartISO={dayStartISO} nowMs={nowMs} />
       ) : (
         <>
       {/* ---- KPI strip: product health (PR stats live in the rail panel) ---- */}
@@ -1213,22 +1231,30 @@ const SIM_TIERS: { name: string; offset: number }[] = [
   { name: "≤1 min", offset: 45 },
   { name: "starting now", offset: -5 },
 ];
+// One extra sim position past the tiers: preview the green "all meetings for
+// the day complete" pill without waiting for the calendar to actually clear.
+const SIM_DONE_POS = SIM_TIERS.length + 1;
 
 /**
  * Header meeting countdown, fed by the primary Google calendar. Stays hidden
  * until the next meeting is within 10 minutes, then counts down mm:ss and
  * escalates in prominence: amber ≤5m, red + gentle pulse ≤2m, red + fast pulse
  * ≤1m (with a one-time alarm chime), "starting now" at 0. Clears ~2m after
- * start. Shares the page's 1s `now` tick so the seconds tick without extra
- * timers, and polls the API once a minute. Press "c" to simulate the tiers
- * (see SIM_TIERS).
+ * start. Once every timed meeting on today's calendar has ended, the pill
+ * turns green: "All meetings for the day complete" (re-arms at midnight when
+ * dayStartISO rolls over). Shares the page's 1s `now` tick so the seconds
+ * tick without extra timers, and polls the API once a minute. Press "c" to
+ * simulate the tiers (see SIM_TIERS; the last position previews the green
+ * all-done pill).
  */
 function MeetingCountdown({
   nowMs,
+  dayStartISO,
   soundOn,
   onStartingNow,
 }: {
   nowMs: number;
+  dayStartISO: string;
   soundOn: boolean;
   onStartingNow: (id: string, summary: string) => void;
 }) {
@@ -1240,8 +1266,17 @@ function MeetingCountdown({
   });
   const realMeeting = data?.meeting ?? null;
 
-  // Simulation state: `pos` 0 = live data, 1..N = SIM_TIERS[pos-1]. `startMs`
-  // is captured at key press so the countdown ticks down from there.
+  // Today's full calendar — same SWR key as the My Day screen, so this poll
+  // both feeds the all-done pill and keeps that screen's cache warm.
+  const { data: dayData } = useSWR<{ events: DayEvent[] }>(
+    myDayKey(dayStartISO),
+    fetcher,
+    { refreshInterval: MY_DAY_REFRESH_MS, revalidateOnFocus: false }
+  );
+
+  // Simulation state: `pos` 0 = live data, 1..N = SIM_TIERS[pos-1],
+  // N+1 = simulated all-done. `startMs` is captured at key press so the
+  // countdown ticks down from there.
   const [sim, setSim] = useState<{ pos: number; startMs: number } | null>(null);
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1256,8 +1291,9 @@ function MeetingCountdown({
       )
         return;
       setSim((cur) => {
-        const nextPos = ((cur?.pos ?? 0) + 1) % (SIM_TIERS.length + 1);
+        const nextPos = ((cur?.pos ?? 0) + 1) % (SIM_TIERS.length + 2);
         if (nextPos === 0) return null; // back to live
+        if (nextPos === SIM_DONE_POS) return { pos: nextPos, startMs: 0 };
         return {
           pos: nextPos,
           startMs: Date.now() + SIM_TIERS[nextPos - 1].offset * 1000,
@@ -1267,17 +1303,33 @@ function MeetingCountdown({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  const simDone = sim?.pos === SIM_DONE_POS;
 
   const meeting = useMemo(
     () =>
-      sim
+      sim && !simDone
         ? {
             summary: `${SIM_TIERS[sim.pos - 1].name} — simulated meeting`,
             startISO: new Date(sim.startMs).toISOString(),
           }
-        : realMeeting,
-    [sim, realMeeting]
+        : simDone
+          ? null
+          : realMeeting,
+    [sim, simDone, realMeeting]
   );
+
+  // Day-complete check: at least one timed meeting today, every one ended.
+  // All-day events don't count — they never "finish". Takes priority over the
+  // countdown (which would otherwise show tomorrow's first meeting).
+  const timedToday = useMemo(
+    () => (dayData?.events ?? []).filter((e) => !e.allDay),
+    [dayData]
+  );
+  const allDone =
+    simDone ||
+    (!sim &&
+      timedToday.length > 0 &&
+      timedToday.every((e) => new Date(e.endISO).getTime() <= nowMs));
 
   const startMs = meeting ? new Date(meeting.startISO).getTime() : null;
   const secsUntil =
@@ -1309,6 +1361,20 @@ function MeetingCountdown({
       onStartingNow(meeting.startISO, meeting.summary);
     }
   }, [meeting, secsUntil, soundOn, onStartingNow]);
+
+  // Calendar cleared for the day — green pill instead of a countdown (which
+  // would otherwise already be pointing at tomorrow's first meeting).
+  if (allDone) {
+    return (
+      <span
+        className="wallboard-cd-in flex items-center gap-[0.4em] whitespace-nowrap rounded-full border border-green-500/45 bg-green-500/10 px-[0.6em] py-[0.22em] text-[0.78em] font-medium text-green-300"
+        title="No more meetings today"
+      >
+        <CalendarCheck className="h-[1.05em] w-[1.05em] shrink-0" />
+        <span>All meetings for the day complete</span>
+      </span>
+    );
+  }
 
   if (!meeting || startMs === null || secsUntil === null) return null;
   // Clear a couple minutes after start — the next poll surfaces what's next.
