@@ -11,10 +11,20 @@ interface GitHubPR {
   closed_at: string | null;
   updated_at: string;
   draft?: boolean;
+  labels?: { name: string }[];
   user: {
     login: string;
     name?: string | null;
   } | null;
+}
+
+/**
+ * PRs labeled "on hold" are excluded from the wallboard stats (open counts,
+ * age, opened/merged today) — they'd distort averages while parked. They
+ * still appear in the activity feed.
+ */
+function isOnHold(pr: GitHubPR): boolean {
+  return !!pr.labels?.some((l) => l.name.toLowerCase() === "on hold");
 }
 
 interface GitHubReview {
@@ -295,30 +305,35 @@ export async function fetchPRSummary(
   since: Date,
   token: string
 ): Promise<PRSummary> {
-  const [open, recentlyCreated, mergedToday] = await Promise.all([
+  const [allOpen, recentlyCreated, recentlyClosed] = await Promise.all([
     listPRs(repo, "state=open&per_page=100", token),
     listPRs(repo, "state=all&sort=created&direction=desc&per_page=100", token),
-    fetchMergedPRs(repo, since, token),
+    listPRs(repo, "state=closed&sort=updated&direction=desc&per_page=100", token),
   ]);
 
   const sinceMs = since.getTime();
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
+  const open = allOpen.filter((pr) => !isOnHold(pr));
+  const ageDays = (pr: GitHubPR) =>
+    (now - new Date(pr.created_at).getTime()) / dayMs;
 
   return {
     openCount: open.length,
     avgOpenAgeDays:
       open.length === 0
         ? 0
-        : open.reduce(
-            (sum, pr) => sum + (now - new Date(pr.created_at).getTime()),
-            0
-          ) /
-          open.length /
-          dayMs,
+        : open.reduce((sum, pr) => sum + ageDays(pr), 0) / open.length,
+    oldestOpenAgeDays:
+      open.length === 0 ? 0 : Math.max(...open.map(ageDays)),
     openedToday: recentlyCreated.filter(
-      (pr) => new Date(pr.created_at).getTime() >= sinceMs
+      (pr) => new Date(pr.created_at).getTime() >= sinceMs && !isOnHold(pr)
     ).length,
-    mergedToday: mergedToday.length,
+    mergedToday: recentlyClosed.filter(
+      (pr) =>
+        pr.merged_at &&
+        new Date(pr.merged_at).getTime() >= sinceMs &&
+        !isOnHold(pr)
+    ).length,
   };
 }

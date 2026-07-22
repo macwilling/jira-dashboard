@@ -20,6 +20,8 @@ export interface PRStats {
 export interface PRSummary {
   openCount: number;
   avgOpenAgeDays: number;
+  /** Age of the oldest open PR — makes the stale tail visible next to the mean. */
+  oldestOpenAgeDays: number;
   openedToday: number;
   mergedToday: number;
 }

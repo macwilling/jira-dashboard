@@ -1,11 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import useSWR from "swr";
 import { Volume2, VolumeX } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useTicketData } from "@/lib/ticket-data-context";
-import { buildRisksList } from "@/lib/risks-utils";
 import { Ticket } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
@@ -69,12 +75,23 @@ const GITHUB_EVENT_TEXT: Record<GitHubActivityEvent["kind"], string> = {
   "deploy-fail": "deployment failed",
 };
 
+interface RepoPRSummary {
+  repo: string;
+  openCount: number;
+  avgOpenAgeDays: number;
+  oldestOpenAgeDays: number;
+  openedToday: number;
+  mergedToday: number;
+}
+
 interface GitHubSummary {
   configured: boolean;
   openCount: number;
   avgOpenAgeDays: number;
+  oldestOpenAgeDays: number;
   openedToday: number;
   mergedToday: number;
+  repos: RepoPRSummary[];
 }
 
 interface DatadogSummary {
@@ -83,9 +100,25 @@ interface DatadogSummary {
   activeUsersSpark: number[];
   pageViews: number;
   pageViewsSpark: number[];
-  clicks: number;
-  clicksSpark: number[];
-  errorRate: number;
+  pageViewsPrev: number;
+  rageClicks: number;
+  rageClicksSpark: number[];
+  rageClicksPrev: number;
+  lcpP75Ms: number | null;
+  lcpP75PrevMs: number | null;
+  errorSessionPct: number;
+  errorSessionPctPrev: number;
+}
+
+/** Signed %-change vs yesterday; null hides the delta (no baseline). */
+function deltaPct(cur: number, prev: number): number | null {
+  if (prev <= 0) return null;
+  return ((cur - prev) / prev) * 100;
+}
+
+function fmtLcp(ms: number | null): string | null {
+  if (ms === null) return null;
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
 
 const MOVE_WINDOW_H = 24;
@@ -199,7 +232,7 @@ function isFullyDone(g: StoryGroup): boolean {
 }
 
 export default function WallboardPage() {
-  const { tickets: allTickets, teamMembers, sprint, isStale, configured } = useTicketData();
+  const { tickets: allTickets, teamMembers, sprint, configured } = useTicketData();
 
   // The shared JQL returns current-sprint work PLUS sprint-less L2 support
   // tickets. The wallboard covers the sprint board only, so scope to tickets
@@ -319,6 +352,42 @@ export default function WallboardPage() {
   useEffect(() => {
     setToasts((t) => t.filter((e) => nowMs - e.at < TOAST_MS));
   }, [nowMs]);
+
+  // FLIP: when the stack reflows (new toast pushes others up, or a removal
+  // lets them settle down), animate siblings from their old position instead
+  // of letting them jump. Skips toasts mid-exit so their slide-out isn't
+  // interrupted.
+  const toastListRef = useRef<HTMLDivElement>(null);
+  const toastRectsRef = useRef<Map<string, number>>(new Map());
+  useLayoutEffect(() => {
+    const list = toastListRef.current;
+    if (!list) return;
+    const prevTops = toastRectsRef.current;
+    const nextTops = new Map<string, number>();
+    // Container rect + layout offset = viewport position without the child's
+    // own in-flight entrance transform. The container is bottom-anchored, so
+    // the container rect (not offsetTop) is what actually moves on reflow.
+    const listTop = list.getBoundingClientRect().top;
+    for (const child of Array.from(list.children)) {
+      const el = child as HTMLElement;
+      const id = el.dataset.toastid;
+      if (!id) continue;
+      const top = listTop + el.offsetTop;
+      nextTops.set(id, top);
+      if (el.classList.contains("wallboard-toast-out")) continue;
+      const prevTop = prevTops.get(id);
+      if (prevTop !== undefined && Math.abs(prevTop - top) > 1) {
+        el.animate(
+          [
+            { transform: `translateY(${prevTop - top}px)` },
+            { transform: "translateY(0)" },
+          ],
+          { duration: 350, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
+        );
+      }
+    }
+    toastRectsRef.current = nextTops;
+  }, [toasts]);
 
   // Demo toasts: press "T" to preview toast styles (cycles through kinds)
   const demoIdxRef = useRef(0);
@@ -497,11 +566,6 @@ export default function WallboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tickets, Math.floor(nowMs / 60_000)]);
 
-  const risks = useMemo(
-    () => buildRisksList(tickets, teamMembers, isStale),
-    [tickets, teamMembers, isStale]
-  );
-
   const doneCount = useMemo(
     () => tickets.filter((t) => stageOf(t.status) === "Done").length,
     [tickets]
@@ -532,20 +596,16 @@ export default function WallboardPage() {
       style={{ fontSize: "20px" }}
     >
       {/* ---- Header ---- */}
-      <header className="flex shrink-0 items-baseline gap-[0.9em] px-[0.2em]">
-        <h1 className="text-[1.35em] font-bold tracking-tight">
-          DeliveryGo{" "}
-          <span className="font-normal text-muted-foreground">
-            · Mission Control
-          </span>
+      <header className="flex shrink-0 items-center gap-[0.9em] px-[0.2em]">
+        <h1 className="flex items-center gap-[0.45em] text-[1.35em] font-bold tracking-tight">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/icon.svg"
+            alt="DeliveryGo"
+            className="h-[1.15em] w-[1.15em]"
+          />
+          Mission Control
         </h1>
-        {sprint && (
-          <span className="text-[0.75em] text-muted-foreground">
-            {sprint.name}
-            {sprintMeta && ` · Day ${sprintMeta.day} of ${sprintMeta.total}`}
-            {` · ${doneCount} of ${tickets.length} tickets done`}
-          </span>
-        )}
         {!configured && (
           <span className="text-[0.7em] text-amber-500">
             Jira not configured — showing demo data
@@ -580,16 +640,8 @@ export default function WallboardPage() {
         </div>
       </header>
 
-      {/* ---- KPI strip ---- */}
-      <div className="grid shrink-0 grid-cols-8 gap-[0.55em]">
-        <StatTile label="Open PRs" value={gh && gh.configured !== false ? gh.openCount : null} unconfigured={gh?.configured === false} />
-        <StatTile label="PRs opened today" value={gh && gh.configured !== false ? gh.openedToday : null} unconfigured={gh?.configured === false} />
-        <StatTile label="PRs merged today" value={gh && gh.configured !== false ? gh.mergedToday : null} unconfigured={gh?.configured === false} good />
-        <StatTile
-          label="Avg PR age"
-          value={gh && gh.configured !== false ? `${gh.avgOpenAgeDays.toFixed(1)}d` : null}
-          unconfigured={gh?.configured === false}
-        />
+      {/* ---- KPI strip: product health (PR stats live in the rail panel) ---- */}
+      <div className="grid shrink-0 grid-cols-5 gap-[0.55em]">
         <StatTile
           label="Active users (1h)"
           value={dd && dd.configured !== false ? dd.activeUsers : null}
@@ -601,24 +653,48 @@ export default function WallboardPage() {
           value={dd && dd.configured !== false ? formatK(dd.pageViews) : null}
           unconfigured={dd?.configured === false}
           spark={dd?.pageViewsSpark}
+          delta={dd && dd.configured !== false ? deltaPct(dd.pageViews, dd.pageViewsPrev) : null}
+          upIsGood
         />
         <StatTile
-          label="Clicks today"
-          value={dd && dd.configured !== false ? formatK(dd.clicks) : null}
+          label="Rage clicks today"
+          value={dd && dd.configured !== false ? dd.rageClicks : null}
           unconfigured={dd?.configured === false}
-          spark={dd?.clicksSpark}
+          spark={dd?.rageClicksSpark}
+          delta={dd && dd.configured !== false ? deltaPct(dd.rageClicks, dd.rageClicksPrev) : null}
+          bad={!!dd && dd.configured !== false && dd.rageClicks >= 200}
         />
         <StatTile
-          label="Error rate"
-          value={dd && dd.configured !== false ? `${dd.errorRate.toFixed(1)}%` : null}
+          label="Page load (LCP p75)"
+          value={dd && dd.configured !== false ? fmtLcp(dd.lcpP75Ms) : null}
           unconfigured={dd?.configured === false}
-          bad={!!dd && dd.configured !== false && dd.errorRate >= 2}
+          delta={
+            dd && dd.configured !== false && dd.lcpP75Ms !== null && dd.lcpP75PrevMs !== null
+              ? deltaPct(dd.lcpP75Ms, dd.lcpP75PrevMs)
+              : null
+          }
+          good={!!dd && dd.configured !== false && dd.lcpP75Ms !== null && dd.lcpP75Ms <= 2500}
+          bad={!!dd && dd.configured !== false && dd.lcpP75Ms !== null && dd.lcpP75Ms > 4000}
+        />
+        <StatTile
+          label="Sessions with errors"
+          value={dd && dd.configured !== false ? `${dd.errorSessionPct.toFixed(0)}%` : null}
+          unconfigured={dd?.configured === false}
+          delta={dd && dd.configured !== false ? deltaPct(dd.errorSessionPct, dd.errorSessionPctPrev) : null}
+          bad={!!dd && dd.configured !== false && dd.errorSessionPct >= 25}
         />
       </div>
 
       {/* ---- Main: board + rail ---- */}
       <div className="flex min-h-0 flex-1 gap-[0.7em]">
-        <Panel title="Sprint Board — by story" className="flex-[2.4]">
+        <Panel
+          title={
+            sprint
+              ? `${sprint.name}${sprintMeta ? ` · Day ${sprintMeta.day} of ${sprintMeta.total}` : ""} · ${doneCount} of ${tickets.length} tickets done`
+              : "Sprint Board — by story"
+          }
+          className="flex-[2.4]"
+        >
           <div
             ref={boardScrollRef}
             className="wallboard-noscrollbar flex min-h-0 flex-1 flex-col gap-[0.45em] overflow-y-auto"
@@ -648,39 +724,25 @@ export default function WallboardPage() {
                 <span className="truncate text-[0.62em] text-muted-foreground">
                   {g.story!.summary} — all {g.subs.length || ""} subtasks done
                 </span>
+                {g.story!.epicName && (
+                  <span
+                    className="max-w-[9em] shrink-0 truncate rounded-full border px-[0.55em] py-[0.1em] text-[0.5em] font-semibold uppercase tracking-wide"
+                    style={{
+                      color: g.story!.epicColor ?? "hsl(var(--muted-foreground))",
+                      borderColor: `${g.story!.epicColor ?? "#888"}55`,
+                      background: `${g.story!.epicColor ?? "#888"}14`,
+                    }}
+                  >
+                    {g.story!.epicName}
+                  </span>
+                )}
               </div>
             ))}
           </div>
         </Panel>
 
         <div className="flex min-w-0 flex-1 flex-col gap-[0.7em]">
-          {risks.length > 0 && (
-            <Panel
-              title={`Blocked / At Risk (${risks.length})`}
-              className="shrink-0 border-red-500/40"
-              titleClassName="text-red-400"
-              dotColor="#f85149"
-            >
-              <div className="flex flex-col gap-[0.4em]">
-                {risks.slice(0, 4).map((r) => (
-                  <div key={r.ticket.key} className="flex items-start gap-[0.4em] text-[0.68em]">
-                    <span className="mt-[0.4em] h-[0.45em] w-[0.45em] shrink-0 rounded-full bg-red-500" />
-                    <span className="min-w-0 leading-snug">
-                      <span className="font-mono font-bold" style={{ color: ACCENT }}>
-                        {r.ticket.key}
-                      </span>{" "}
-                      <span className="text-muted-foreground">— {r.reason}</span>
-                    </span>
-                  </div>
-                ))}
-                {risks.length > 4 && (
-                  <span className="text-[0.6em] text-muted-foreground">
-                    +{risks.length - 4} more on /risks
-                  </span>
-                )}
-              </div>
-            </Panel>
-          )}
+          <PullRequestsPanel gh={gh} />
 
           <Panel title="Recent Changes" className="min-h-0 flex-1" dotColor={ACCENT}>
             <div className="flex min-h-0 flex-1 flex-col gap-[0.5em] overflow-hidden">
@@ -689,7 +751,7 @@ export default function WallboardPage() {
                   Watching for changes…
                 </span>
               )}
-              {feed.slice(0, 12).map((e) => (
+              {feed.slice(0, 16).map((e) => (
                 <div key={e.id} className="flex items-start gap-[0.45em] text-[0.68em]">
                   <SourceIcon
                     kind={e.kind}
@@ -716,30 +778,54 @@ export default function WallboardPage() {
       </div>
 
       {/* ---- Toasts ---- */}
-      <div className="pointer-events-none absolute bottom-[0.9em] right-[0.9em] flex flex-col gap-[0.5em]">
-        {toasts.map((e) => (
-          <div
-            key={e.id}
-            className="wallboard-toast max-w-[22em] rounded-lg border bg-popover px-[0.8em] py-[0.6em] shadow-2xl"
-            style={{ borderLeft: `0.25em solid ${FEED_COLORS[e.kind]}` }}
-          >
-            <div className="text-[0.7em] leading-snug">
-              <span className="font-mono font-bold" style={{ color: ACCENT }}>
-                {e.key}
-              </span>{" "}
-              {e.text}
-              {e.who && <span className="text-muted-foreground"> · {e.who}</span>}
-            </div>
-            <div className="mt-[0.15em] truncate text-[0.58em] text-muted-foreground">
-              {e.summary}
-            </div>
-            {e.detail && (
-              <div className="mt-[0.3em] line-clamp-3 border-l-2 border-border pl-[0.6em] text-[0.6em] italic leading-snug text-foreground/75">
-                {e.detail}
+      <div
+        ref={toastListRef}
+        className="pointer-events-none absolute bottom-[0.9em] right-[0.9em] flex w-[28em] flex-col items-end gap-[0.55em]"
+      >
+        {toasts.map((e) => {
+          // Window must exceed the 1s clock tick, or a toast can skip the
+          // exit state entirely and vanish unanimated
+          const leaving = nowMs - e.at >= TOAST_MS - 1200;
+          return (
+            <div
+              key={e.id}
+              data-toastid={e.id}
+              className={cn(
+                "wallboard-toast w-full rounded-xl border bg-popover px-[1em] py-[0.75em] shadow-2xl",
+                leaving && "wallboard-toast-out"
+              )}
+              style={{ borderLeft: `0.3em solid ${FEED_COLORS[e.kind]}` }}
+            >
+              <div className="flex items-center gap-[0.5em] text-[0.85em] leading-snug">
+                <SourceIcon
+                  kind={e.kind}
+                  color={FEED_COLORS[e.kind]}
+                  className="h-[1em] w-[1em] shrink-0"
+                />
+                <span className="shrink-0 font-mono font-bold" style={{ color: ACCENT }}>
+                  {e.key}
+                </span>
+                <span className="min-w-0 truncate font-semibold">{e.text}</span>
+                <span className="ml-auto shrink-0 text-[0.75em] text-muted-foreground">
+                  {relativeTime(e.at, nowMs)}
+                </span>
               </div>
-            )}
-          </div>
-        ))}
+              <div className="mt-[0.25em] line-clamp-2 text-[0.72em] leading-snug text-foreground/85">
+                {e.summary}
+              </div>
+              {e.who && (
+                <div className="mt-[0.2em] text-[0.62em] text-muted-foreground">
+                  by {e.who}
+                </div>
+              )}
+              {e.detail && (
+                <div className="mt-[0.35em] line-clamp-3 border-l-2 border-border pl-[0.6em] text-[0.66em] italic leading-snug text-foreground/75">
+                  {e.detail}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <style>{`
@@ -758,11 +844,18 @@ export default function WallboardPage() {
           }
         }
         .wallboard-toast {
-          animation: wallboard-toast-in 0.3s ease;
+          animation: wallboard-toast-in 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
         @keyframes wallboard-toast-in {
-          from { transform: translateY(0.8em); opacity: 0; }
-          to { transform: translateY(0); opacity: 1; }
+          from { transform: translateX(115%) scale(0.96); opacity: 0; }
+          to { transform: translateX(0) scale(1); opacity: 1; }
+        }
+        .wallboard-toast-out {
+          animation: wallboard-toast-out 0.5s cubic-bezier(0.55, 0, 0.85, 0.36) forwards;
+        }
+        @keyframes wallboard-toast-out {
+          from { transform: translateX(0); opacity: 1; }
+          to { transform: translateX(120%); opacity: 0; }
         }
       `}</style>
     </div>
@@ -773,12 +866,14 @@ export default function WallboardPage() {
 
 function Panel({
   title,
+  titleRight,
   dotColor,
   className,
   titleClassName,
   children,
 }: {
   title: string;
+  titleRight?: React.ReactNode;
   dotColor?: string;
   className?: string;
   titleClassName?: string;
@@ -804,9 +899,108 @@ function Panel({
           />
         )}
         {title}
+        {titleRight}
       </h2>
       {children}
     </section>
+  );
+}
+
+/** Per-repo PR pulse: open / opened today / merged today / avg open age. */
+function PullRequestsPanel({ gh }: { gh?: GitHubSummary }) {
+  return (
+    <Panel title="Pull Requests" className="shrink-0" dotColor="#3fb950">
+      {!gh ? (
+        <span className="text-[0.68em] text-muted-foreground">Loading…</span>
+      ) : gh.configured === false ? (
+        <span className="text-[0.68em] text-muted-foreground/60">
+          not configured
+        </span>
+      ) : (
+        <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-[0.95em] gap-y-[0.3em] text-[0.68em] leading-snug">
+          <span />
+          <ColHead>open</ColHead>
+          <ColHead>new</ColHead>
+          <ColHead>merged</ColHead>
+          <ColHead>avg</ColHead>
+          <ColHead>oldest</ColHead>
+          {(gh.repos ?? []).map((r) => (
+            <PRRow
+              key={r.repo}
+              label={r.repo}
+              open={r.openCount}
+              opened={r.openedToday}
+              merged={r.mergedToday}
+              age={r.avgOpenAgeDays}
+              oldest={r.oldestOpenAgeDays}
+            />
+          ))}
+          <div className="col-span-6 my-[0.1em] border-t" />
+          <PRRow
+            label="total"
+            open={gh.openCount}
+            opened={gh.openedToday}
+            merged={gh.mergedToday}
+            age={gh.avgOpenAgeDays}
+            oldest={gh.oldestOpenAgeDays}
+            bold
+          />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ColHead({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-right text-[0.78em] font-medium uppercase tracking-wider text-muted-foreground/70">
+      {children}
+    </span>
+  );
+}
+
+function PRRow({
+  label,
+  open,
+  opened,
+  merged,
+  age,
+  oldest,
+  bold,
+}: {
+  label: string;
+  open: number;
+  opened: number;
+  merged: number;
+  age: number;
+  oldest: number;
+  bold?: boolean;
+}) {
+  const num = cn("text-right tabular-nums", bold && "font-bold");
+  return (
+    <>
+      <span className={cn("font-mono", bold ? "font-bold" : "text-foreground/85")}>
+        {label}
+      </span>
+      <span className={num}>{open}</span>
+      <span className={num}>{opened}</span>
+      <span className={cn(num, merged > 0 && "text-green-400")}>{merged}</span>
+      <span className={cn(num, "text-muted-foreground")}>
+        {open === 0 ? "—" : `${age.toFixed(1)}d`}
+      </span>
+      <span
+        className={cn(
+          num,
+          open === 0
+            ? "text-muted-foreground"
+            : oldest >= 90
+              ? "text-amber-400"
+              : "text-muted-foreground"
+        )}
+      >
+        {open === 0 ? "—" : `${Math.round(oldest)}d`}
+      </span>
+    </>
   );
 }
 
@@ -814,6 +1008,8 @@ function StatTile({
   label,
   value,
   spark,
+  delta,
+  upIsGood,
   unconfigured,
   good,
   bad,
@@ -821,20 +1017,42 @@ function StatTile({
   label: string;
   value: string | number | null;
   spark?: number[];
+  /** Signed %-change vs yesterday; null/undefined hides the delta. */
+  delta?: number | null;
+  /** Whether an increase in this metric is good news (colors the delta). */
+  upIsGood?: boolean;
   unconfigured?: boolean;
   good?: boolean;
   bad?: boolean;
 }) {
+  const showDelta = typeof delta === "number" && Math.abs(delta) >= 1;
+  const improving = showDelta && (delta > 0) === !!upIsGood;
   return (
     <div className="rounded-xl border bg-muted/20 px-[0.6em] py-[0.45em]">
-      <div
-        className={cn(
-          "text-[1.35em] font-bold leading-tight tabular-nums",
-          good && "text-green-400",
-          bad && "text-red-400"
+      <div className="flex min-w-0 items-baseline gap-[0.35em]">
+        <div
+          className={cn(
+            "text-[1.35em] font-bold leading-tight",
+            good && "text-green-400",
+            bad && "text-red-400"
+          )}
+        >
+          {value ?? "—"}
+        </div>
+        {showDelta && (
+          <span
+            className={cn(
+              "truncate text-[0.55em] font-semibold",
+              improving ? "text-green-400" : "text-red-400"
+            )}
+          >
+            {delta > 0 ? "▲" : "▼"}
+            {Math.abs(delta).toFixed(0)}%{" "}
+            <span className="font-normal text-muted-foreground">
+              vs yesterday
+            </span>
+          </span>
         )}
-      >
-        {value ?? "—"}
       </div>
       <div className="truncate text-[0.52em] font-medium uppercase tracking-wider text-muted-foreground">
         {label}
@@ -848,30 +1066,45 @@ function StatTile({
   );
 }
 
+const SPARK_LINE = "#8b949e"; // de-emphasis hue; the accent end-dot marks "now"
+
 function Sparkline({ points }: { points: number[] }) {
   const w = 100;
   const h = 16;
   const max = Math.max(...points, 1);
+  const y = (p: number) => h - 2 - (p / max) * (h - 4);
   const path = points
-    .map(
-      (p, i) =>
-        `${((i / (points.length - 1)) * w).toFixed(1)},${(h - (p / max) * (h - 2)).toFixed(1)}`
-    )
+    .map((p, i) => `${((i / (points.length - 1)) * w).toFixed(1)},${y(p).toFixed(1)}`)
     .join(" ");
+  const lastTopPct = (y(points[points.length - 1]) / h) * 100;
   return (
-    <svg
-      viewBox={`0 0 ${w} ${h}`}
-      className="mt-[0.2em] h-[0.8em] w-full"
-      preserveAspectRatio="none"
-    >
-      <polyline
-        points={path}
-        fill="none"
-        stroke={ACCENT}
-        strokeWidth="1.5"
-        vectorEffect="non-scaling-stroke"
+    <div className="relative mt-[0.2em] h-[0.8em] w-full">
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        className="h-full w-full"
+        preserveAspectRatio="none"
+      >
+        <polygon
+          points={`0,${h} ${path} ${w},${h}`}
+          fill={SPARK_LINE}
+          opacity="0.12"
+        />
+        <polyline
+          points={path}
+          fill="none"
+          stroke={SPARK_LINE}
+          strokeWidth="2"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      {/* end-dot rides outside the SVG so preserveAspectRatio can't distort it */}
+      <span
+        className="absolute right-0 h-[5px] w-[5px] translate-x-1/2 rounded-full ring-2 ring-background"
+        style={{ top: `calc(${lastTopPct.toFixed(1)}% - 2.5px)`, background: ACCENT }}
       />
-    </svg>
+    </div>
   );
 }
 
@@ -947,6 +1180,19 @@ function StoryCard({
             <span className="min-w-0 flex-1 truncate text-[0.65em]">
               {story.summary}
             </span>
+            {story.epicName && (
+              <span
+                className="max-w-[9em] shrink-0 truncate rounded-full border px-[0.55em] py-[0.1em] text-[0.5em] font-semibold uppercase tracking-wide"
+                style={{
+                  color: story.epicColor ?? "hsl(var(--muted-foreground))",
+                  borderColor: `${story.epicColor ?? "#888"}55`,
+                  background: `${story.epicColor ?? "#888"}14`,
+                }}
+                title={story.epicName}
+              >
+                {story.epicName}
+              </span>
+            )}
           </>
         ) : (
           <span className="min-w-0 flex-1 truncate text-[0.58em] font-semibold uppercase tracking-widest text-muted-foreground">

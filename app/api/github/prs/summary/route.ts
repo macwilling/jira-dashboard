@@ -35,8 +35,13 @@ export async function GET(req: NextRequest) {
       configured: true,
       openCount: totalOpen,
       avgOpenAgeDays: totalOpen === 0 ? 0 : weightedAge / totalOpen,
+      oldestOpenAgeDays: Math.max(0, ...perRepo.map((r) => r.oldestOpenAgeDays)),
       openedToday: perRepo.reduce((s, r) => s + r.openedToday, 0),
       mergedToday: perRepo.reduce((s, r) => s + r.mergedToday, 0),
+      repos: REPOS.map((repo, i) => ({
+        repo: repo.replace(/^istrada-/, ""),
+        ...perRepo[i],
+      })),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

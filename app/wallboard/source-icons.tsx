@@ -49,6 +49,9 @@ const PR_ICONS: Partial<
  * Source icon for a feed event, tinted via `color` (pass the event's
  * FEED_COLORS entry so kind color-coding carries over from the old dot).
  */
+/** Atlassian brand blue, brightened variant for dark backgrounds. */
+const JIRA_BLUE = "#2684FF";
+
 export function SourceIcon({
   kind,
   color,
@@ -58,10 +61,13 @@ export function SourceIcon({
   color: string;
   className?: string;
 }) {
-  const Mark =
-    PR_ICONS[kind] ?? (sourceOf(kind) === "github" ? GitHubMark : JiraMark);
+  const jira = sourceOf(kind) === "jira";
+  const Mark = PR_ICONS[kind] ?? (jira ? JiraMark : GitHubMark);
   return (
-    <span className={cn("block", className)} style={{ color }}>
+    <span
+      className={cn("block", className)}
+      style={{ color: jira ? JIRA_BLUE : color }}
+    >
       <Mark className="h-full w-full" />
     </span>
   );

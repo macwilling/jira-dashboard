@@ -41,7 +41,7 @@ function appFilter(): string {
 }
 
 interface RumCompute {
-  aggregation: "count" | "cardinality";
+  aggregation: "count" | "cardinality" | "pc75";
   metric?: string;
   type?: "total" | "timeseries";
   interval?: string;
@@ -98,57 +98,122 @@ export interface DatadogInsights {
   activeUsersSpark: number[];
   pageViews: number;
   pageViewsSpark: number[];
-  clicks: number;
-  clicksSpark: number[];
-  errorRate: number; // percent, errors per 100 views today
+  /** Yesterday's page views up to the same time of day (for the delta). */
+  pageViewsPrev: number;
+  rageClicks: number;
+  rageClicksSpark: number[];
+  rageClicksPrev: number;
+  /** p75 Largest Contentful Paint today, in ms; null when no data. */
+  lcpP75Ms: number | null;
+  lcpP75PrevMs: number | null;
+  /** Percent of today's sessions that hit at least one error. */
+  errorSessionPct: number;
+  errorSessionPctPrev: number;
 }
+
+/** All queries exclude Synthetics/CI bot traffic. */
+const USER = " @session.type:user";
+const NS_PER_MS = 1e6;
 
 /** `dayStart` is the viewer's local start-of-day (ISO) so "today" follows the office clock. */
 export async function fetchInsights(dayStart: string): Promise<DatadogInsights> {
   const userField = process.env.DATADOG_RUM_USER_FIELD || "@usr.id";
+  // Yesterday's equivalent window: same start-of-day and "now", shifted -24h
+  const prevDayStart = new Date(
+    new Date(dayStart).getTime() - 24 * 3_600_000
+  ).toISOString();
+
+  const RAGE = "@type:action @action.frustration.type:rage_click" + USER;
+  const LCP: RumCompute = {
+    aggregation: "pc75",
+    metric: "@view.largest_contentful_paint",
+  };
 
   const [
     activeUsers,
     activeUsersSpark,
     pageViews,
     pageViewsSpark,
-    clicks,
-    clicksSpark,
-    errors,
+    pageViewsPrev,
+    rageClicks,
+    rageClicksSpark,
+    rageClicksPrev,
+    lcpP75,
+    lcpP75Prev,
+    errorSessions,
+    totalSessions,
+    errorSessionsPrev,
+    totalSessionsPrev,
   ] = await Promise.all([
-    rumAggregate("@type:session", "now-1h", "now", {
+    rumAggregate("@type:session" + USER, "now-1h", "now", {
       aggregation: "cardinality",
       metric: userField,
     }),
-    rumAggregate("@type:session", "now-6h", "now", {
+    rumAggregate("@type:session" + USER, "now-6h", "now", {
       aggregation: "cardinality",
       metric: userField,
       type: "timeseries",
       interval: "30m",
     }),
-    rumAggregate("@type:view", dayStart, "now", { aggregation: "count" }),
-    rumAggregate("@type:view", "now-24h", "now", {
+    rumAggregate("@type:view" + USER, dayStart, "now", { aggregation: "count" }),
+    rumAggregate("@type:view" + USER, "now-24h", "now", {
       aggregation: "count",
       type: "timeseries",
       interval: "2h",
     }),
-    rumAggregate("@type:action", dayStart, "now", { aggregation: "count" }),
-    rumAggregate("@type:action", "now-24h", "now", {
+    rumAggregate("@type:view" + USER, prevDayStart, "now-24h", {
+      aggregation: "count",
+    }),
+    rumAggregate(RAGE, dayStart, "now", { aggregation: "count" }),
+    rumAggregate(RAGE, "now-24h", "now", {
       aggregation: "count",
       type: "timeseries",
       interval: "2h",
     }),
-    rumAggregate("@type:error", dayStart, "now", { aggregation: "count" }),
+    rumAggregate(RAGE, prevDayStart, "now-24h", { aggregation: "count" }),
+    rumAggregate("@type:view" + USER, dayStart, "now", LCP),
+    rumAggregate("@type:view" + USER, prevDayStart, "now-24h", LCP),
+    rumAggregate("@type:error" + USER, dayStart, "now", {
+      aggregation: "cardinality",
+      metric: "@session.id",
+    }),
+    rumAggregate("@type:session" + USER, dayStart, "now", {
+      aggregation: "cardinality",
+      metric: "@session.id",
+    }),
+    rumAggregate("@type:error" + USER, prevDayStart, "now-24h", {
+      aggregation: "cardinality",
+      metric: "@session.id",
+    }),
+    rumAggregate("@type:session" + USER, prevDayStart, "now-24h", {
+      aggregation: "cardinality",
+      metric: "@session.id",
+    }),
   ]);
 
-  const views = pageViews as number;
+  const pct = (part: number, whole: number) =>
+    whole === 0 ? 0 : (part / whole) * 100;
+  const lcpMs = (ns: number) => (ns > 0 ? ns / NS_PER_MS : null);
+  // The final timeseries bucket is the in-progress interval — a partial count
+  // that reads as a plunge to zero. Show complete buckets only.
+  const trim = (spark: number[]) =>
+    spark.length > 2 ? spark.slice(0, -1) : spark;
+
   return {
     activeUsers: activeUsers as number,
-    activeUsersSpark: activeUsersSpark as number[],
-    pageViews: views,
-    pageViewsSpark: pageViewsSpark as number[],
-    clicks: clicks as number,
-    clicksSpark: clicksSpark as number[],
-    errorRate: views === 0 ? 0 : ((errors as number) / views) * 100,
+    activeUsersSpark: trim(activeUsersSpark as number[]),
+    pageViews: pageViews as number,
+    pageViewsSpark: trim(pageViewsSpark as number[]),
+    pageViewsPrev: pageViewsPrev as number,
+    rageClicks: rageClicks as number,
+    rageClicksSpark: trim(rageClicksSpark as number[]),
+    rageClicksPrev: rageClicksPrev as number,
+    lcpP75Ms: lcpMs(lcpP75 as number),
+    lcpP75PrevMs: lcpMs(lcpP75Prev as number),
+    errorSessionPct: pct(errorSessions as number, totalSessions as number),
+    errorSessionPctPrev: pct(
+      errorSessionsPrev as number,
+      totalSessionsPrev as number
+    ),
   };
 }
