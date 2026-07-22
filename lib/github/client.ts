@@ -62,7 +62,7 @@ interface GitHubUser {
 
 const userNameCache = new Map<string, string>();
 
-async function getDisplayName(login: string, token: string): Promise<string> {
+export async function getDisplayName(login: string, token: string): Promise<string> {
   if (userNameCache.has(login)) return userNameCache.get(login)!;
   try {
     const res = await fetch(`https://api.github.com/users/${login}`, {

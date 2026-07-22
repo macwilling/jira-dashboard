@@ -63,6 +63,9 @@ export async function POST(request: NextRequest) {
       ...(body.bugDoneStatuses?.length
         ? { bugDoneStatuses: body.bugDoneStatuses }
         : {}),
+      ...(body.githubUserMap && Object.keys(body.githubUserMap).length
+        ? { githubUserMap: body.githubUserMap }
+        : {}),
     });
 
     return NextResponse.json({ ok: true });

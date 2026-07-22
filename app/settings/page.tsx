@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { CheckCircle2, XCircle, Loader2, Save, LogOut, Send, TestTube } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, Save, LogOut, Send, TestTube, Search } from "lucide-react";
 import { AppShell } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -23,7 +23,18 @@ interface ConfigStatus {
     releaseAdminSlackTarget?: string;
     bugProjectKey?: string;
     bugCleanupLabelPrefixes?: string[];
+    githubUserMap?: Record<string, string>;
   } | null;
+}
+
+interface Identities {
+  jiraUsers: { accountId: string; name: string; avatarUrl: string | null }[];
+  githubUsers: {
+    login: string;
+    name: string;
+    avatarUrl: string;
+    suggestedAccountId: string | null;
+  }[];
 }
 
 interface SlackAuthStatus {
@@ -62,6 +73,10 @@ export default function SettingsPage() {
   const [releaseApprovalTarget, setReleaseApprovalTarget] = useState("");
   const [bugProjectKey, setBugProjectKey] = useState("");
   const [bugCleanupPrefixes, setBugCleanupPrefixes] = useState("");
+  // Wallboard Team Activity: GitHub login → Jira accountId map.
+  const [githubUserMap, setGithubUserMap] = useState<Record<string, string>>({});
+  const [identities, setIdentities] = useState<Identities | null>(null);
+  const [identitiesLoading, setIdentitiesLoading] = useState(false);
   const [approvalTestSending, setApprovalTestSending] = useState(false);
   const [approvalTestResult, setApprovalTestResult] = useState<
     | { kind: "sent"; warnings: string[] }
@@ -111,6 +126,7 @@ export default function SettingsPage() {
           setBugCleanupPrefixes(
             (data.config.bugCleanupLabelPrefixes || []).join(", ")
           );
+          setGithubUserMap(data.config.githubUserMap || {});
         }
       })
       .catch(() => {})
@@ -146,6 +162,9 @@ export default function SettingsPage() {
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean),
+          githubUserMap: Object.fromEntries(
+            Object.entries(githubUserMap).filter(([, v]) => v)
+          ),
         }),
       });
       if (res.ok) setSaved(true);
@@ -245,6 +264,32 @@ export default function SettingsPage() {
       setTesting(false);
     }
   };
+
+  // Load the Jira board users + recent GitHub users for the identity mapper,
+  // and pre-fill the name-guess suggestion for any GitHub user not yet mapped.
+  const handleLoadIdentities = useCallback(async () => {
+    setIdentitiesLoading(true);
+    try {
+      const res = await fetch("/api/wallboard/identities");
+      if (res.ok) {
+        const data = (await res.json()) as Identities;
+        setIdentities(data);
+        setGithubUserMap((cur) => {
+          const next = { ...cur };
+          for (const gh of data.githubUsers) {
+            if (!next[gh.login] && gh.suggestedAccountId) {
+              next[gh.login] = gh.suggestedAccountId; // pre-fill best guess
+            }
+          }
+          return next;
+        });
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIdentitiesLoading(false);
+    }
+  }, []);
 
   if (loading) {
     return (
@@ -765,6 +810,108 @@ export default function SettingsPage() {
                 .
               </p>
             </div>
+          </div>
+        </section>
+
+        {/* WALLBOARD — TEAM ACTIVITY */}
+        <section className="space-y-3">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Wallboard — Team Activity
+            </h2>
+            <p className="text-xxs text-muted-foreground mt-1">
+              Identity aliases for the wallboard&apos;s Team Activity screen.
+              Map a GitHub login (or a name variant) to a person&apos;s exact
+              Jira display name so their Jira and GitHub activity merge onto one
+              row.
+            </p>
+          </div>
+
+          <div className="rounded-lg border p-4 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-xxs text-muted-foreground leading-relaxed">
+                Load the team members, then map each GitHub user to their Jira
+                person. GitHub PR activity is attributed by this map — not by
+                name — so it&apos;s exact. Unmapped GitHub users still show on
+                the board under their GitHub name until you map them.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1.5 shrink-0"
+                onClick={handleLoadIdentities}
+                disabled={identitiesLoading}
+              >
+                {identitiesLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Search className="h-3 w-3" />
+                )}
+                {identities ? "Reload users" : "Load users"}
+              </Button>
+            </div>
+
+            {!identities ? (
+              <p className="text-xxs text-muted-foreground/60">
+                Click <span className="font-medium">Load users</span> to fetch
+                GitHub contributors and Jira board members.
+              </p>
+            ) : identities.githubUsers.length === 0 ? (
+              <p className="text-xxs text-muted-foreground/60">
+                No recent GitHub users found (check{" "}
+                <code className="bg-muted px-1 rounded">GITHUB_TOKEN</code>).
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="grid grid-cols-[1fr_auto_1.4fr] items-center gap-3 px-1 text-xxs font-medium uppercase tracking-wide text-muted-foreground/70">
+                  <span>GitHub user</span>
+                  <span />
+                  <span>Jira person</span>
+                </div>
+                {identities.githubUsers.map((gh) => (
+                  <div
+                    key={gh.login}
+                    className="grid grid-cols-[1fr_auto_1.4fr] items-center gap-3"
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={gh.avatarUrl}
+                        alt=""
+                        className="h-5 w-5 shrink-0 rounded-full bg-muted"
+                      />
+                      <span className="min-w-0 truncate text-xs">
+                        <span className="font-mono">{gh.login}</span>
+                        {gh.name !== gh.login && (
+                          <span className="text-muted-foreground">
+                            {" "}
+                            · {gh.name}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                    <span className="text-xs text-muted-foreground">→</span>
+                    <select
+                      value={githubUserMap[gh.login] ?? ""}
+                      onChange={(e) =>
+                        setGithubUserMap((m) => ({
+                          ...m,
+                          [gh.login]: e.target.value,
+                        }))
+                      }
+                      className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+                    >
+                      <option value="">— unmapped —</option>
+                      {identities.jiraUsers.map((u) => (
+                        <option key={u.accountId} value={u.accountId}>
+                          {u.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 

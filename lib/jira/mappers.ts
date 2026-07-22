@@ -376,6 +376,7 @@ export function mapChangelog(histories: JiraChangelogHistory[]): ChangelogEntry[
     entries.push({
       id: history.id,
       authorName: history.author.displayName,
+      authorAccountId: history.author.accountId,
       authorAvatarUrl: history.author.avatarUrls["24x24"],
       created: history.created,
       changes: filteredItems.map((item) => ({

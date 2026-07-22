@@ -26,6 +26,13 @@ export interface DashboardConfig {
   bugCleanupLabelPrefixes?: string[];
   bugOpenStatuses?: string[]; // override the default open-status set
   bugDoneStatuses?: string[]; // override the default done-status set
+  /**
+   * Wallboard Team Activity identity map: GitHub login → Jira accountId, so a
+   * dev's GitHub PR activity attributes to their Jira row (keyed by stable
+   * account id, not name). Edited on /settings. Unmapped GitHub users show as
+   * their own GitHub-identity rows until mapped.
+   */
+  githubUserMap?: Record<string, string>;
 }
 
 const CONFIG_KEY = "dashboard-config";

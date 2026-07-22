@@ -61,6 +61,7 @@ export interface Sprint {
 export interface ChangelogEntry {
   id: string;
   authorName: string;
+  authorAccountId: string;
   authorAvatarUrl: string;
   created: string;
   changes: {

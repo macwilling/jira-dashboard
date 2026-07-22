@@ -54,10 +54,11 @@ export default function StoryCompletionBoard({
             Nothing in flight.
           </span>
         )}
-        {active.map((row) => (
+        {active.map((row, i) => (
           <StoryRowView
             key={row.ticket.key}
             row={row}
+            index={i}
             avatarOf={avatarOf}
             // Pulse the story when it, OR any of its subtasks, just changed.
             highlighted={
@@ -149,10 +150,12 @@ function LegendDot({
 
 function StoryRowView({
   row,
+  index,
   avatarOf,
   highlighted,
 }: {
   row: StoryRow;
+  index: number;
   avatarOf: (id: string) => { name: string; avatarUrl: string } | undefined;
   highlighted: boolean;
 }) {
@@ -160,6 +163,9 @@ function StoryRowView({
   const member = avatarOf(ticket.assigneeId);
   const stalled = row.started && !row.moved && row.idleH >= IDLE_BADGE_H;
   const stageColor = STAGE_COLORS[rootStage];
+  // Entrance stagger; keyed rows only replay it on screen mount, not on the
+  // FLIP reorders that follow live updates.
+  const delayMs = 160 + Math.min(index, 14) * 45;
 
   // Fixed grid columns so key / summary / meta / avatar / progress line up on
   // the same vertical rails across every row, regardless of what each contains.
@@ -167,13 +173,14 @@ function StoryRowView({
     <div
       data-flip-key={ticket.key}
       className={cn(
-        "grid shrink-0 items-center gap-[0.6em] rounded-md border-l-[0.2em] py-[0.36em] pl-[0.6em] pr-[0.6em]",
+        "wallboard-fade-up grid shrink-0 items-center gap-[0.6em] rounded-md border-l-[0.2em] py-[0.36em] pl-[0.6em] pr-[0.6em]",
         row.started ? "bg-white/[0.02]" : "opacity-60",
         highlighted && "wallboard-glow"
       )}
       style={{
         gridTemplateColumns: "4.6em 2.4em minmax(0,1fr) 4.6em 1.5em 12.5em",
         borderLeftColor: blocked ? STAGE_COLORS.Blocked : "rgba(255,255,255,0.08)",
+        animationDelay: `${delayMs}ms`,
       }}
     >
       {/* 1 · key (muted — a reference, not the headline) */}
@@ -219,16 +226,21 @@ function StoryRowView({
       {hasSubs ? (
         <div className="flex items-center gap-[0.5em]">
           <div className="flex h-[0.5em] flex-1 overflow-hidden rounded-full bg-white/[0.07]">
-            {row.segments.map((seg) => (
-              <div
-                key={seg.stage}
-                style={{
-                  width: `${(seg.count / total) * 100}%`,
-                  background: STAGE_COLORS[seg.stage],
-                }}
-                title={`${seg.count} ${seg.stage}`}
-              />
-            ))}
+            <div
+              className="wallboard-grow-x flex h-full w-full"
+              style={{ animationDelay: `${delayMs + 140}ms` }}
+            >
+              {row.segments.map((seg) => (
+                <div
+                  key={seg.stage}
+                  style={{
+                    width: `${(seg.count / total) * 100}%`,
+                    background: STAGE_COLORS[seg.stage],
+                  }}
+                  title={`${seg.count} ${seg.stage}`}
+                />
+              ))}
+            </div>
           </div>
           <span className="w-[2.6em] shrink-0 text-right text-[0.55em] tabular-nums text-foreground/60">
             {done}/{total}

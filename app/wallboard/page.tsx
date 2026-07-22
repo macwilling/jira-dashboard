@@ -27,6 +27,10 @@ import ScrollingStoryBoard, {
   ScrollingStoryBoardHandle,
 } from "./boards/ScrollingStoryBoard";
 import StoryCompletionBoard from "./boards/StoryCompletionBoard";
+import TeamScreen, {
+  TEAM_ACTIVITY_REFRESH_MS,
+  teamActivityKey,
+} from "./screens/TeamScreen";
 import {
   isUnlocked,
   playAlarm,
@@ -38,6 +42,7 @@ import {
   unlockOnGesture,
 } from "./sound";
 import { SourceIcon } from "./source-icons";
+import StatusBar, { SourceStatus } from "./StatusBar";
 import { stageOf } from "./stages";
 
 const ACCENT = "#4493f8";
@@ -46,6 +51,11 @@ const STATS_REFRESH_MS = 300_000;
 const TOAST_MS = 12_000;
 const VERSION_POLL_MS = 120_000; // check for a new deploy every 2 min
 const SOUND_KEY = "wallboard-sound";
+
+// Full-screen views the wallboard rotates through (below the top toolbar).
+const SCREENS = ["sprint", "team"] as const;
+type Screen = (typeof SCREENS)[number];
+const ROTATE_MS = 25_000; // dwell per screen before rotating
 
 const fetcher = async (url: string) => {
   const res = await fetch(url);
@@ -154,11 +164,20 @@ export default function WallboardPage() {
     [allTickets]
   );
 
+  // Per-source last-successful-poll stamps, feeding the footer StatusBar. A
+  // source's dot blinks each time its stamp advances (see StatusBar).
+  const [srcUpdated, setSrcUpdated] = useState<Record<string, number>>({});
+  const stamp = useCallback(
+    (k: string) => setSrcUpdated((u) => ({ ...u, [k]: Date.now() })),
+    []
+  );
+
   // Same cache key as TicketDataProvider — this hook just drives a faster
   // (60s) revalidation cadence while the wallboard is on screen.
-  useSWR("/api/jira/tickets", fetcher, {
+  const { error: jiraError } = useSWR("/api/jira/tickets", fetcher, {
     refreshInterval: TICKETS_REFRESH_MS,
     revalidateOnFocus: false,
+    onSuccess: () => stamp("jira"),
   });
 
   // ---- clock (1s tick; also drives relative times + toast expiry) ----
@@ -175,15 +194,44 @@ export default function WallboardPage() {
   const dayStartISO = dayStartDate.toISOString();
 
   // ---- GitHub + Datadog stats (slower cadence — see docs/polling notes) ----
-  const { data: gh } = useSWR<GitHubSummary>(
+  const { data: gh, error: ghError } = useSWR<GitHubSummary>(
     `/api/github/prs/summary?since=${encodeURIComponent(dayStartISO)}`,
     fetcher,
-    { refreshInterval: STATS_REFRESH_MS, revalidateOnFocus: false }
+    {
+      refreshInterval: STATS_REFRESH_MS,
+      revalidateOnFocus: false,
+      onSuccess: () => stamp("github"),
+    }
   );
-  const { data: dd } = useSWR<DatadogSummary>(
+  const { data: dd, error: ddError } = useSWR<DatadogSummary>(
     `/api/datadog/insights?dayStart=${encodeURIComponent(dayStartISO)}`,
     fetcher,
-    { refreshInterval: STATS_REFRESH_MS, revalidateOnFocus: false }
+    {
+      refreshInterval: STATS_REFRESH_MS,
+      revalidateOnFocus: false,
+      onSuccess: () => stamp("datadog"),
+    }
+  );
+  // Keep the Team screen's slow rollup warm while any screen is up: same SWR
+  // key as TeamScreen's hook, so by the time the rotation lands on it the
+  // data renders instantly instead of showing "Loading…" for most of the
+  // dwell. Raw json fetcher on purpose — the page's shaped `fetcher` would
+  // poison this cache entry with a ticket-shaped fallback.
+  useSWR(teamActivityKey(dayStartISO), (url: string) => fetch(url).then((r) => r.json()), {
+    refreshInterval: TEAM_ACTIVITY_REFRESH_MS,
+    revalidateOnFocus: false,
+  });
+
+  // Status-only mirror of the calendar poll (dedupes with MeetingCountdown's
+  // hook — same key, so no extra request), surfaced here for the StatusBar.
+  const { data: cal, error: calError } = useSWR<{ connected?: boolean }>(
+    "/api/google/calendar/next",
+    fetcher,
+    {
+      refreshInterval: 60_000,
+      revalidateOnFocus: false,
+      onSuccess: () => stamp("calendar"),
+    }
   );
 
   // ---- team lookup ----
@@ -291,14 +339,20 @@ export default function WallboardPage() {
   const deployVersionRef = useRef<string | null>(null);
   const [updatePending, setUpdatePending] = useState(false);
   const [reloading, setReloading] = useState(false);
+  const [versionOk, setVersionOk] = useState<boolean | null>(null);
   useEffect(() => {
     let cancelled = false;
     async function check() {
       try {
         const res = await fetch("/api/version", { cache: "no-store" });
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (!cancelled) setVersionOk(false);
+          return;
+        }
         const { version } = (await res.json()) as { version?: string };
         if (!version || cancelled) return;
+        setVersionOk(true);
+        stamp("vercel");
         if (deployVersionRef.current === null) {
           deployVersionRef.current = version; // baseline = version at load
         } else if (version !== deployVersionRef.current) {
@@ -306,6 +360,7 @@ export default function WallboardPage() {
         }
       } catch {
         /* transient network error — try again next tick */
+        if (!cancelled) setVersionOk(false);
       }
     }
     check();
@@ -314,7 +369,7 @@ export default function WallboardPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [stamp]);
 
   // Idle gate: kick off the dramatic reload sequence only when no toast/meeting
   // alert is showing, so we never cover the board mid-standup. Once it starts
@@ -434,6 +489,50 @@ export default function WallboardPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // ---- screen rotation: Sprint ⇄ Team activity ----
+  // Auto-rotates on a timer; press 1/2 to pin a screen, 0 to resume. Never
+  // rotates away while a toast/meeting alert is up, so an update is never
+  // hidden mid-standup.
+  const [screenIdx, setScreenIdx] = useState(0);
+  const [pinnedScreen, setPinnedScreen] = useState<Screen | null>(null);
+  const rotateGateRef = useRef({ busy: false });
+  rotateGateRef.current.busy = toasts.length > 0 || meetingToast !== null;
+  useEffect(() => {
+    if (pinnedScreen) return;
+    const id = setInterval(() => {
+      if (rotateGateRef.current.busy) return;
+      setScreenIdx((i) => (i + 1) % SCREENS.length);
+    }, ROTATE_MS);
+    return () => clearInterval(id);
+  }, [pinnedScreen]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const tgt = e.target as HTMLElement;
+      if (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA") return;
+      if (e.key === "1") setPinnedScreen("sprint");
+      else if (e.key === "2") setPinnedScreen("team");
+      else if (e.key === "0") setPinnedScreen(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const targetScreen: Screen = pinnedScreen ?? SCREENS[screenIdx];
+
+  // Two-phase screen swap: play a quick fade/slide-out on the current screen,
+  // then mount the next one (keyed, so its entrance animations replay).
+  const [screen, setScreen] = useState<Screen>(targetScreen);
+  const [screenLeaving, setScreenLeaving] = useState(false);
+  useEffect(() => {
+    if (targetScreen === screen) return;
+    setScreenLeaving(true);
+    const id = setTimeout(() => {
+      setScreen(targetScreen);
+      setScreenLeaving(false);
+    }, 300); // matches wallboard-screen-out
+    return () => clearTimeout(id);
+  }, [targetScreen, screen]);
+
   // Auto-scroll the story board when it overflows the panel
   const scrollBoardRef = useRef<ScrollingStoryBoardHandle>(null);
 
@@ -518,6 +617,51 @@ export default function WallboardPage() {
     return { day, total };
   }, [sprint, nowMs]);
 
+  // Connection health for the footer StatusBar, derived from the same poll
+  // state the board already renders from. Precedence: unconfigured → error →
+  // (never polled yet) loading → ok.
+  const sources = useMemo<SourceStatus[]>(() => {
+    const make = (
+      label: string,
+      key: string,
+      unconfigured: boolean,
+      error: unknown
+    ): SourceStatus => {
+      const updatedAt = srcUpdated[key] ?? null;
+      const state = unconfigured
+        ? "unconfigured"
+        : error
+          ? "error"
+          : updatedAt === null
+            ? "loading"
+            : "ok";
+      return { label, state, updatedAt };
+    };
+    return [
+      make("Jira", "jira", configured === false, jiraError),
+      make("GitHub", "github", gh?.configured === false, ghError),
+      make("Datadog", "datadog", dd?.configured === false, ddError),
+      make("Calendar", "calendar", cal?.connected === false, calError),
+      {
+        label: "Vercel",
+        state:
+          versionOk === false ? "error" : versionOk === null ? "loading" : "ok",
+        updatedAt: srcUpdated["vercel"] ?? null,
+      },
+    ];
+  }, [
+    srcUpdated,
+    configured,
+    jiraError,
+    gh,
+    ghError,
+    dd,
+    ddError,
+    cal,
+    calError,
+    versionOk,
+  ]);
+
   return (
     <div
       className="dark fixed inset-0 z-50 flex flex-col gap-[0.7em] overflow-hidden bg-background p-[0.8em] text-foreground"
@@ -583,6 +727,17 @@ export default function WallboardPage() {
         </div>
       </header>
 
+      <div
+        key={screen}
+        className={cn(
+          "flex min-h-0 flex-1 flex-col gap-[0.7em]",
+          screenLeaving ? "wallboard-screen-out" : "wallboard-screen-in"
+        )}
+      >
+      {screen === "team" ? (
+        <TeamScreen dayStartISO={dayStartISO} />
+      ) : (
+        <>
       {/* ---- KPI strip: product health (PR stats live in the rail panel) ---- */}
       <div className="grid shrink-0 grid-cols-5 gap-[0.55em]">
         <StatTile
@@ -590,6 +745,7 @@ export default function WallboardPage() {
           value={dd && dd.configured !== false ? dd.activeUsers : null}
           unconfigured={dd?.configured === false}
           spark={dd?.activeUsersSpark}
+          delay={0}
         />
         <StatTile
           label="Page views today"
@@ -598,6 +754,7 @@ export default function WallboardPage() {
           spark={dd?.pageViewsSpark}
           delta={dd && dd.configured !== false ? deltaPct(dd.pageViews, dd.pageViewsPrev) : null}
           upIsGood
+          delay={70}
         />
         <StatTile
           label="Rage clicks today"
@@ -606,6 +763,7 @@ export default function WallboardPage() {
           spark={dd?.rageClicksSpark}
           delta={dd && dd.configured !== false ? deltaPct(dd.rageClicks, dd.rageClicksPrev) : null}
           bad={!!dd && dd.configured !== false && dd.rageClicks >= 200}
+          delay={140}
         />
         <StatTile
           label="Page load (LCP p75)"
@@ -618,6 +776,7 @@ export default function WallboardPage() {
           }
           good={!!dd && dd.configured !== false && dd.lcpP75Ms !== null && dd.lcpP75Ms <= 2500}
           bad={!!dd && dd.configured !== false && dd.lcpP75Ms !== null && dd.lcpP75Ms > 4000}
+          delay={210}
         />
         <StatTile
           label="Sessions with errors"
@@ -625,6 +784,7 @@ export default function WallboardPage() {
           unconfigured={dd?.configured === false}
           delta={dd && dd.configured !== false ? deltaPct(dd.errorSessionPct, dd.errorSessionPctPrev) : null}
           bad={!!dd && dd.configured !== false && dd.errorSessionPct >= 25}
+          delay={280}
         />
       </div>
 
@@ -636,7 +796,7 @@ export default function WallboardPage() {
               ? `${sprint.name}${sprintMeta ? ` · Day ${sprintMeta.day} of ${sprintMeta.total}` : ""} · ${doneCount} of ${tickets.length} tickets done`
               : "Sprint Board — by story"
           }
-          className="flex-[2.4]"
+          className="wallboard-fade-up flex-[2.4] [animation-delay:120ms]"
         >
           {BOARD === "scrolling" ? (
             <ScrollingStoryBoard
@@ -660,20 +820,27 @@ export default function WallboardPage() {
         <div className="flex min-w-0 flex-1 flex-col gap-[0.7em]">
           <PullRequestsPanel gh={gh} />
 
-          <Panel title="Activity Feed" className="min-h-0 flex-1" dotColor={ACCENT}>
+          <Panel
+            title="Activity Feed"
+            className="wallboard-fade-up min-h-0 flex-1 [animation-delay:280ms]"
+            dotColor={ACCENT}
+          >
             <div className="flex min-h-0 flex-1 flex-col gap-[0.5em] overflow-hidden">
               {feed.length === 0 && (
                 <span className="text-[0.68em] text-muted-foreground">
                   Watching for changes…
                 </span>
               )}
-              {feed.slice(0, 16).map((e) => (
+              {feed.slice(0, 16).map((e, i) => (
                 // One row per activity, newest first. The per-kind icon marks
                 // the activity type (git PR state, deploy, Jira change); the
                 // change text is the emphasized line, with who + title below.
+                // Rows are keyed, so the stagger only replays on screen mount;
+                // a mid-view arrival fades in at delay ~0.
                 <div
                   key={e.id}
-                  className="flex items-start gap-[0.55em] text-[0.68em]"
+                  className="wallboard-fade-up flex items-start gap-[0.55em] text-[0.68em]"
+                  style={{ animationDelay: `${300 + Math.min(i, 12) * 45}ms` }}
                 >
                   <SourceIcon
                     kind={e.kind}
@@ -716,6 +883,12 @@ export default function WallboardPage() {
           </Panel>
         </div>
       </div>
+        </>
+      )}
+      </div>
+
+      {/* ---- Footer: upstream connection health ---- */}
+      <StatusBar sources={sources} nowMs={nowMs} />
 
       {/* ---- Toasts ---- */}
       <div
@@ -800,9 +973,58 @@ export default function WallboardPage() {
         />
       )}
 
-      <style>{`
+      {/* dangerouslySetInnerHTML: SSR escapes apostrophes/quotes in <style>
+          text children, tripping a hydration text-mismatch in dev. */}
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+        /* Screen-rotation transition: outgoing view lifts away, incoming view
+           settles in (the incoming wrapper is keyed, so children's own
+           entrance staggers replay with it). */
+        .wallboard-screen-in {
+          animation: wallboard-screen-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        @keyframes wallboard-screen-in {
+          from { opacity: 0; transform: translateY(0.9em) scale(0.992); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .wallboard-screen-out {
+          animation: wallboard-screen-out 0.3s ease-in forwards;
+        }
+        @keyframes wallboard-screen-out {
+          from { opacity: 1; transform: translateY(0) scale(1); }
+          to { opacity: 0; transform: translateY(-0.7em) scale(0.996); }
+        }
+        /* Shared entrance stagger (tiles, panels, rows) + bar-grow, same
+           curves as the Team screen's ts-* set. From-only keyframes with a
+           backwards fill: hidden through the stagger delay, animate toward the
+           element's natural style, then fully release — so they never fight
+           the board's FLIP inline transforms or an element's own opacity. */
+        .wallboard-fade-up {
+          animation: wallboard-fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+        }
+        @keyframes wallboard-fade-up {
+          from { opacity: 0; transform: translateY(0.6em); }
+        }
+        .wallboard-grow-x {
+          transform-origin: left center;
+          animation: wallboard-grow-x 0.9s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+        }
+        @keyframes wallboard-grow-x {
+          from { transform: scaleX(0); }
+        }
         .wallboard-noscrollbar { scrollbar-width: none; }
         .wallboard-noscrollbar::-webkit-scrollbar { display: none; }
+        /* Status-dot blink: one expanding ring on each successful poll. The dot
+           element is keyed on updatedAt, so a fresh poll remounts it and the
+           non-looping animation replays — a visible "heartbeat" of liveness. */
+        .wallboard-status-ping {
+          animation: wallboard-status-ping 1.6s cubic-bezier(0, 0, 0.2, 1);
+        }
+        @keyframes wallboard-status-ping {
+          0% { transform: scale(1); opacity: 0.75; }
+          80%, 100% { transform: scale(2.6); opacity: 0; }
+        }
         .wallboard-glow {
           animation: wallboard-glow-pulse 1.2s ease-in-out infinite;
           opacity: 1 !important;
@@ -841,6 +1063,39 @@ export default function WallboardPage() {
           0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); opacity: 0.92; }
           50% { box-shadow: 0 0 0 2px rgba(239,68,68,0.45), 0 0 11px rgba(239,68,68,0.4); opacity: 1; }
         }
+        /* Countdown pill entrance: drops in from the header when the next
+           meeting first comes into range. */
+        .wallboard-cd-in {
+          animation: wallboard-cd-in 0.6s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+        }
+        @keyframes wallboard-cd-in {
+          from { opacity: 0; transform: translateY(-0.55em) scale(0.92); }
+        }
+        /* Alarm-bell wiggle on the calendar icon in the red tiers: a short
+           ring, then still for the rest of the cycle so it stays glanceable
+           rather than frantic. */
+        .wallboard-cd-bell {
+          transform-origin: 50% 20%;
+          animation: wallboard-cd-bell 1.6s ease-in-out infinite;
+        }
+        @keyframes wallboard-cd-bell {
+          0%, 55%, 100% { transform: rotate(0); }
+          62% { transform: rotate(13deg); }
+          70% { transform: rotate(-11deg); }
+          78% { transform: rotate(7deg); }
+          86% { transform: rotate(-4deg); }
+          93% { transform: rotate(2deg); }
+        }
+        /* Final-minute tick: each second lands with a quick settle pop (the
+           span is re-keyed per second so this replays). */
+        .wallboard-cd-tick {
+          display: inline-block;
+          animation: wallboard-cd-tick 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        @keyframes wallboard-cd-tick {
+          from { transform: scale(1.22); opacity: 0.55; }
+          to { transform: scale(1); opacity: 1; }
+        }
         /* Deploy rocket-launch overlay */
         .wallboard-deploy-overlay {
           animation: wallboard-deploy-in 0.35s ease-out,
@@ -863,7 +1118,9 @@ export default function WallboardPage() {
           55% { transform: scale(0.9); opacity: 1; filter: blur(0); }
           100% { transform: scale(1); opacity: 1; }
         }
-      `}</style>
+      `,
+        }}
+      />
     </div>
   );
 }
@@ -1087,22 +1344,38 @@ function MeetingCountdown({
     sizeClass = "text-[0.82em] font-medium";
   }
 
+  // Red tiers: ring the icon like an alarm bell; final minute: pop each
+  // second (the countdown span is re-keyed per tick so the animation replays).
+  const urgent = secsUntil <= 120;
+  const finalMinute = secsUntil <= 60 && secsUntil > 0;
+
   return (
     <span
       className={cn(
-        "flex items-center gap-[0.4em] whitespace-nowrap rounded-full border px-[0.6em] py-[0.22em] tabular-nums transition-colors",
+        // transition-all so tier changes morph (font-size/padding included)
+        // instead of snapping at the 5m/2m/1m boundaries.
+        "wallboard-cd-in flex items-center gap-[0.4em] whitespace-nowrap rounded-full border px-[0.6em] py-[0.22em] tabular-nums transition-all duration-500",
         tone,
         sizeClass,
         animClass
       )}
       title={meeting.summary}
     >
-      <CalendarClock className="h-[1.05em] w-[1.05em] shrink-0" />
+      <CalendarClock
+        className={cn(
+          "h-[1.05em] w-[1.05em] shrink-0",
+          urgent && "wallboard-cd-bell"
+        )}
+      />
       <span className="font-sans">{meeting.summary}</span>
       {far ? (
         <span>{clock}</span>
       ) : secsUntil <= 0 ? (
         <span>starting now</span>
+      ) : finalMinute ? (
+        <span key={secsUntil} className="wallboard-cd-tick">
+          in {countdown}
+        </span>
       ) : (
         <span>in {countdown}</span>
       )}
@@ -1155,7 +1428,11 @@ function Panel({
 /** Per-repo PR pulse: open / opened today / merged today / avg open age. */
 function PullRequestsPanel({ gh }: { gh?: GitHubSummary }) {
   return (
-    <Panel title="Pull Requests" className="shrink-0" dotColor="#3fb950">
+    <Panel
+      title="Pull Requests"
+      className="wallboard-fade-up shrink-0 [animation-delay:200ms]"
+      dotColor="#3fb950"
+    >
       {!gh ? (
         <span className="text-[0.68em] text-muted-foreground">Loading…</span>
       ) : gh.configured === false ? (
@@ -1259,6 +1536,7 @@ function StatTile({
   unconfigured,
   good,
   bad,
+  delay,
 }: {
   label: string;
   value: string | number | null;
@@ -1270,11 +1548,16 @@ function StatTile({
   unconfigured?: boolean;
   good?: boolean;
   bad?: boolean;
+  /** Entrance-stagger offset (ms); replays whenever the screen mounts. */
+  delay?: number;
 }) {
   const showDelta = typeof delta === "number" && Math.abs(delta) >= 1;
   const improving = showDelta && (delta > 0) === !!upIsGood;
   return (
-    <div className="rounded-xl border bg-muted/20 px-[0.6em] py-[0.45em]">
+    <div
+      className="wallboard-fade-up rounded-xl border bg-muted/20 px-[0.6em] py-[0.45em]"
+      style={{ animationDelay: `${delay ?? 0}ms` }}
+    >
       <div className="flex min-w-0 items-baseline gap-[0.35em]">
         <div
           className={cn(
