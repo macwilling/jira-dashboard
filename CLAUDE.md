@@ -12,8 +12,15 @@ Jira Standup Viewer — a Next.js 14 (App Router) dashboard for facilitating scr
 - `npm run build` — Production build
 - `npm run lint` — ESLint
 - `node --env-file=.env.local scripts/apply-migrations.mjs` — Apply additive D1 migrations (idempotent; checks `PRAGMA table_info` before each `ALTER`)
+- `npm test` — Run the unit test suite once (Vitest)
+- `npm run test:watch` — Vitest in watch mode
+- `npm run test:coverage` — Run with a V8 coverage report
 
-No test framework is configured.
+### Testing
+
+Vitest is the test runner. Config lives in `vitest.config.mts` (must be `.mts` — the package is CommonJS and `vite-tsconfig-paths` is ESM-only); the `@/*` path alias is resolved via `vite-tsconfig-paths`. Tests are colocated next to source as `*.test.ts` / `*.test.tsx`. The default environment is `node`; a test that needs the DOM opts in with a `// @vitest-environment jsdom` pragma on the first line and uses `@testing-library/react` (jest-dom matchers are registered in `vitest.setup.ts`). Shared fixtures (e.g. `makeTicket`) live in `test/fixtures.ts`. See `docs/testing.md`.
+
+Current coverage focuses on pure logic: Jira mappers (ADF→Markdown, priority/type/status mapping), wallboard stage + feed-diff logic, shared utils, and the release-name parser. The release **orchestrator** and D1-backed stores are not yet covered — that's the highest-value area to extend next.
 
 The Cloudflare cron worker in `cron/` is a **separate npm package** with its own `package.json`. Deploy it with `wrangler deploy` from inside `cron/` (see `cron/README.md`).
 
