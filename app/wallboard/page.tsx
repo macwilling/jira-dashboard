@@ -1237,22 +1237,22 @@ function MeetingCountdown({
   // Escalation ladder — a pill whose tone intensifies as the meeting nears.
   // The red tiers add a glow pulse (footprint stays fixed; see keyframes).
   let tone = "border-white/10 bg-white/[0.06] text-foreground/80"; // ≤10m
-  let sizeClass = "text-[0.62em]";
+  let sizeClass = "text-[0.8em]";
   let animClass = "";
   if (far) {
-    tone = "border-white/10 bg-white/[0.035] text-muted-foreground";
-    sizeClass = "text-[0.6em]";
+    tone = "border-white/10 bg-white/[0.035] text-foreground";
+    sizeClass = "text-[0.78em]";
   } else if (secsUntil <= 60) {
     tone = "border-red-500/70 bg-red-500/15 text-red-200";
-    sizeClass = "text-[0.66em] font-semibold";
+    sizeClass = "text-[0.88em] font-semibold";
     animClass = "wallboard-cd-pulse-fast";
   } else if (secsUntil <= 120) {
     tone = "border-red-500/50 bg-red-500/10 text-red-300";
-    sizeClass = "text-[0.64em] font-semibold";
+    sizeClass = "text-[0.84em] font-semibold";
     animClass = "wallboard-cd-pulse";
   } else if (secsUntil <= 300) {
     tone = "border-amber-500/40 bg-amber-500/10 text-amber-300";
-    sizeClass = "text-[0.64em] font-medium";
+    sizeClass = "text-[0.82em] font-medium";
   }
 
   return (
