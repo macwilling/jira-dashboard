@@ -138,6 +138,10 @@ async function listPRs(
 ): Promise<GitHubPR[]> {
   const url = `https://api.github.com/repos/${GITHUB_ORG}/${repo}/pulls?${params}`;
   const res = await fetch(url, {
+    // Live activity feed — the URL is static (time filtering happens in JS),
+    // so without this Next.js caches the first response and every poll goes
+    // stale. Must stay uncached to reflect new PRs/reviews.
+    cache: "no-store",
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
@@ -155,6 +159,7 @@ async function listPRs(
 async function ghGet<T>(url: string, token: string): Promise<T> {
   const full = url.startsWith("https://") ? url : `https://api.github.com${url}`;
   const res = await fetch(full, {
+    cache: "no-store",
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
