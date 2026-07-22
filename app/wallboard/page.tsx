@@ -260,7 +260,12 @@ export default function WallboardPage() {
       setFeed((f) =>
         [...resolved, ...f].sort((a, b) => b.at - a.at).slice(0, 60)
       );
-      const toToast = resolved.slice(0, 4);
+      // Feed keeps each event's real change time; toasts must carry the moment
+      // they're SHOWN, or the expiry filter (nowMs - at < TOAST_MS) drops them
+      // instantly — a change surfaced by the 60s poll is already older than the
+      // toast lifetime. Same stamp the GitHub path applies.
+      const shownAt = Date.now();
+      const toToast = resolved.slice(0, 4).map((e) => ({ ...e, at: shownAt }));
       setToasts((t) => [...t, ...toToast].slice(-4));
       if (soundOnRef.current) playDing();
     });
