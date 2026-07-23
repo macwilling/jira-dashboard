@@ -1,18 +1,21 @@
 "use client";
 
 /**
- * "My Day" screen for the rotating wallboard — the day as a flight plan.
+ * "My Day" screen for the rotating wallboard — the facilitator's own day.
  *
- *   1. Flight path — the whole workday as one horizontal track: meeting
- *      blocks pop in along it (green = flown, glowing blue = in the air,
- *      hollow = ahead), hour ticks below, a breathing red cursor at now.
- *   2. Agenda — a spined timeline of today's meetings. Finished ones dim out
- *      behind pop-in green checks, an in-progress one glows with a live
- *      elapsed bar, upcoming ones count down. A red rule marks "now" between
- *      meetings, and a sheened banner lands when the day is clear.
- *   3. Rail — day stats (time in meetings / when you're clear / tasks due),
- *      a Google Tasks due-today card, and — once the day is done — a
- *      pre-read of the next workday (weekends skipped; see pickPreviewDay).
+ * Mirrors the sprint screen's architecture (main panel + rail of Panels):
+ *
+ *   Main panel — "Day timeline" strip (the workday as one groove: meeting
+ *   capsules flush inside it, double-bookings split into two lanes, elapsed
+ *   time shaded, upcoming free gaps labeled, breathing red cursor at now,
+ *   legend on the eyebrow) above a spined agenda: finished meetings dim out
+ *   behind pop-in green checks, an in-progress one glows with a live elapsed
+ *   bar, upcoming ones count down, and a sheened banner lands when the day
+ *   is clear.
+ *
+ *   Rail — icon-chip day stats (time in meetings / when you're clear / tasks
+ *   due), a next-workday pre-read panel (weekends and empty weekdays skipped;
+ *   see pickPreviewDay), and a Google Tasks due-today panel.
  *
  * Everything animates in staggered on mount, and the screen remounts on
  * every rotation, so the choreography replays each time it comes around.
@@ -43,6 +46,7 @@ export type { DayEvent };
 const ACCENT = "#4493f8";
 const DONE_GREEN = "#3fb950";
 const NOW_RED = "#f87171";
+const AMBER = "#e3b341";
 const PREVIEW_MAX_ROWS = 5;
 const TASKS_MAX_ROWS = 8;
 
@@ -156,10 +160,8 @@ export default function MyDayScreen({
   // Day stats for the rail tiles.
   const meetingMs = timed.reduce((n, e) => n + (e.endMs - e.startMs), 0);
   const lastEndMs = timed.reduce((n, e) => Math.max(n, e.endMs), 0);
-  const clearFrom =
-    timed.length === 0 || lastEndMs <= nowMs
-      ? "Now"
-      : fmtTime(new Date(lastEndMs).toISOString());
+  const clearNow = timed.length === 0 || lastEndMs <= nowMs;
+  const clearFrom = clearNow ? "Now" : fmtTime(new Date(lastEndMs).toISOString());
 
   // ---- tasks due today / overdue ----
   const { data: tasksData } = useSWR<TasksResp>(tasksKey(dateStr), fetcher, {
@@ -197,120 +199,122 @@ export default function MyDayScreen({
   });
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-muted/20 p-[0.9em]">
-      <h2 className="mb-[0.55em] flex shrink-0 items-center gap-[0.6em] text-[0.7em] font-semibold uppercase tracking-widest text-muted-foreground">
-        My Day — {dateLabel}
-        {allDay.map((e) => (
-          <span
-            key={e.id}
-            className="md-fade-up flex items-center gap-[0.4em] rounded-full border border-white/10 bg-white/[0.05] px-[0.7em] py-[0.14em] font-medium normal-case tracking-normal text-foreground/75"
-          >
-            <CalendarDays className="h-[1em] w-[1em] shrink-0 text-muted-foreground" />
-            {e.summary}
-          </span>
-        ))}
-        {timed.length > 0 && (
-          <span className="ml-auto flex items-center gap-[0.5em] font-medium normal-case tracking-normal">
-            <DoneRing done={doneCount} total={timed.length} />
-            <span className={allDone ? "text-green-400" : "text-muted-foreground/80"}>
-              {doneCount} of {timed.length} done
+    <div className="flex min-h-0 flex-1 gap-[0.7em]">
+      {/* ---- main panel: timeline + agenda ---- */}
+      <Panel
+        className="wallboard-fade-up flex-[2.4] [animation-delay:80ms]"
+        title={
+          <>
+            My Day — {dateLabel}
+            {allDay.map((e) => (
+              <span
+                key={e.id}
+                className="flex items-center gap-[0.35em] rounded-full border border-white/10 bg-white/[0.05] px-[0.65em] py-[0.12em] font-medium normal-case tracking-normal text-foreground/75"
+              >
+                <CalendarDays className="h-[1em] w-[1em] shrink-0 text-muted-foreground" />
+                {e.summary}
+              </span>
+            ))}
+          </>
+        }
+        titleRight={
+          timed.length > 0 ? (
+            <span className="ml-auto flex items-center gap-[0.45em] font-medium normal-case tracking-normal">
+              <DoneRing done={doneCount} total={timed.length} />
+              <span className={allDone ? "text-green-400" : "text-muted-foreground/80"}>
+                {doneCount} of {timed.length} done
+              </span>
             </span>
-          </span>
-        )}
-      </h2>
-
-      {!data ? (
-        <Centered>Loading…</Centered>
-      ) : data.connected === false ? (
-        <Centered muted>Google Calendar not connected</Centered>
-      ) : (
-        <>
-          {timed.length > 0 && (
-            <FlightPath events={timed} dayStartMs={dayStartMs} nowMs={nowMs} />
-          )}
-
-          <div className="flex min-h-0 flex-1 gap-[0.8em]">
-            {/* ---- agenda column ---- */}
-            <div className="wallboard-noscrollbar relative flex min-h-0 flex-1 flex-col gap-[0.45em] overflow-y-auto pr-[0.2em]">
-              {timed.length === 0 ? (
-                <div className="md-fade-up flex flex-1 flex-col items-center justify-center gap-[0.6em] text-green-400">
-                  <Sunrise className="h-[2.6em] w-[2.6em] opacity-70" />
-                  <span className="text-[0.85em] font-medium">
-                    No meetings today — clear runway
-                  </span>
-                </div>
-              ) : (
-                <>
-                  {/* rows wrapper hugs content so the spine ends at the last
-                      node instead of running to the panel bottom */}
-                  <div className="relative flex shrink-0 flex-col gap-[0.45em]">
-                    <div
-                      className="md-draw-y absolute bottom-[1em] left-[0.9em] top-[1em] w-[2px] rounded bg-white/[0.07]"
-                      style={{ animationDelay: "250ms" }}
-                    />
-                    {timed.map((e, i) => (
-                      <div key={e.id} className="contents">
-                        {i === nowMarkerIdx && <NowMarker nowMs={nowMs} />}
-                        <AgendaRow
-                          e={e}
-                          nowMs={nowMs}
-                          isNext={i === nextIdx}
-                          delay={140 + Math.min(i, 10) * 70}
-                        />
-                      </div>
-                    ))}
-                    {nowMarkerIdx === timed.length && <NowMarker nowMs={nowMs} />}
-                  </div>
-                  {allDone && (
-                    <div className="md-fade-up md-sheen mt-[0.3em] flex shrink-0 items-center justify-center gap-[0.5em] rounded-lg border border-green-500/40 bg-green-500/10 px-[0.9em] py-[0.6em] text-[0.8em] font-semibold text-green-300 [animation-delay:450ms]">
-                      <CalendarCheck className="h-[1.1em] w-[1.1em] shrink-0" />
-                      All meetings for the day complete
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* ---- rail: stats · tomorrow · tasks ---- */}
-            <div className="flex w-[21.5em] shrink-0 flex-col gap-[0.6em]">
-              <div className="grid shrink-0 grid-cols-3 gap-[0.5em]">
-                <StatTile
-                  icon={Clock}
-                  label="In meetings"
-                  value={meetingMs > 0 ? fmtSpan(meetingMs) : "—"}
-                  countMinutes={Math.round(meetingMs / 60_000)}
-                  delay={260}
-                />
-                <StatTile
-                  icon={CalendarCheck}
-                  label="Clear from"
-                  value={clearFrom}
-                  good={clearFrom === "Now"}
-                  delay={330}
-                />
-                <StatTile
-                  icon={ListTodo}
-                  label="Tasks due"
-                  value={tasksData ? String(tasks.length) : "—"}
-                  countTo={tasksData ? tasks.length : undefined}
-                  bad={overdueCount > 0}
-                  delay={400}
-                />
-              </div>
-
-              {dayClear && preview && (
-                <TomorrowCard preview={preview} tomorrowMs={new Date(tomorrowISO).getTime()} />
-              )}
-
-              <TasksCard
-                tasksData={tasksData}
-                dateStr={dateStr}
-                overdueCount={overdueCount}
-              />
-            </div>
+          ) : undefined
+        }
+      >
+        {!data ? (
+          <Centered>Loading…</Centered>
+        ) : data.connected === false ? (
+          <Centered muted>Google Calendar not connected</Centered>
+        ) : timed.length === 0 ? (
+          <div className="md-fade-up flex flex-1 flex-col items-center justify-center gap-[0.6em] text-green-400">
+            <Sunrise className="h-[2.6em] w-[2.6em] opacity-70" />
+            <span className="text-[0.85em] font-medium">
+              No meetings today — clear runway
+            </span>
           </div>
-        </>
-      )}
+        ) : (
+          <>
+            <FlightPath events={timed} dayStartMs={dayStartMs} nowMs={nowMs} />
+
+            <div className="wallboard-noscrollbar flex min-h-0 flex-1 flex-col gap-[0.45em] overflow-y-auto pr-[0.2em]">
+              {/* rows wrapper hugs content so the spine ends at the last
+                  node instead of running to the panel bottom */}
+              <div className="relative flex shrink-0 flex-col gap-[0.45em]">
+                <div
+                  className="md-draw-y absolute bottom-[1em] left-[0.9em] top-[1em] w-[2px] rounded bg-white/[0.07]"
+                  style={{ animationDelay: "250ms" }}
+                />
+                {timed.map((e, i) => (
+                  <div key={e.id} className="contents">
+                    {i === nowMarkerIdx && <NowMarker nowMs={nowMs} />}
+                    <AgendaRow
+                      e={e}
+                      nowMs={nowMs}
+                      isNext={i === nextIdx}
+                      delay={200 + Math.min(i, 10) * 70}
+                    />
+                  </div>
+                ))}
+                {nowMarkerIdx === timed.length && <NowMarker nowMs={nowMs} />}
+              </div>
+              {allDone && (
+                <div className="md-fade-up md-sheen mt-[0.3em] flex shrink-0 items-center justify-center gap-[0.5em] rounded-lg border border-green-500/40 bg-green-500/10 px-[0.9em] py-[0.6em] text-[0.8em] font-semibold text-green-300 [animation-delay:450ms]">
+                  <CalendarCheck className="h-[1.1em] w-[1.1em] shrink-0" />
+                  All meetings for the day complete
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </Panel>
+
+      {/* ---- rail: stats · tomorrow · tasks ---- */}
+      <div className="flex min-w-0 flex-1 flex-col gap-[0.7em]">
+        <div className="grid shrink-0 grid-cols-3 gap-[0.55em]">
+          <RailTile
+            icon={Clock}
+            color={ACCENT}
+            label="In meetings"
+            value={meetingMs > 0 ? fmtSpan(meetingMs) : "—"}
+            countMinutes={Math.round(meetingMs / 60_000)}
+            delay={160}
+          />
+          <RailTile
+            icon={CalendarCheck}
+            color={DONE_GREEN}
+            label="Clear from"
+            value={clearFrom}
+            valueClass={clearNow ? "text-green-400" : undefined}
+            delay={230}
+          />
+          <RailTile
+            icon={ListTodo}
+            color={overdueCount > 0 ? AMBER : ACCENT}
+            label="Tasks due"
+            value={tasksData ? String(tasks.length) : "—"}
+            countTo={tasksData ? tasks.length : undefined}
+            valueClass={overdueCount > 0 ? "text-amber-400" : undefined}
+            delay={300}
+          />
+        </div>
+
+        {dayClear && preview && (
+          <TomorrowPanel preview={preview} tomorrowMs={new Date(tomorrowISO).getTime()} />
+        )}
+
+        <TasksPanel
+          tasksData={tasksData}
+          dateStr={dateStr}
+          overdueCount={overdueCount}
+        />
+      </div>
 
       {/* dangerouslySetInnerHTML: SSR escapes apostrophes/quotes in <style>
           text children, tripping a hydration text-mismatch in dev. */}
@@ -339,7 +343,7 @@ export default function MyDayScreen({
         @keyframes md-draw-y {
           from { transform: scaleY(0); }
         }
-        /* Overshoot pop for checkmarks + flight-path blocks. */
+        /* Overshoot pop for checkmarks + timeline capsules. */
         .md-pop {
           animation: md-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
         }
@@ -375,7 +379,7 @@ export default function MyDayScreen({
         @keyframes md-sheen {
           to { transform: skewX(-20deg) translateX(340%); }
         }
-        /* Glow pulse on the in-progress flight-path block. */
+        /* Glow pulse on the in-progress timeline capsule. */
         .md-live {
           animation: md-live 1.8s ease-in-out infinite;
         }
@@ -386,19 +390,81 @@ export default function MyDayScreen({
       `,
         }}
       />
+    </div>
+  );
+}
+
+/* ================= panel scaffolding (matches page.tsx Panel) ================= */
+
+function Panel({
+  title,
+  titleRight,
+  dotColor,
+  className,
+  children,
+}: {
+  title: React.ReactNode;
+  titleRight?: React.ReactNode;
+  dotColor?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section
+      className={cn(
+        "flex min-w-0 flex-col overflow-hidden rounded-xl border bg-muted/20 p-[0.7em]",
+        className
+      )}
+    >
+      <h2 className="mb-[0.55em] flex shrink-0 items-center gap-[0.4em] text-[0.62em] font-semibold uppercase tracking-widest text-muted-foreground">
+        {dotColor && (
+          <span
+            className="h-[0.55em] w-[0.55em] shrink-0 rounded-full"
+            style={{ background: dotColor }}
+          />
+        )}
+        {title}
+        {titleRight}
+      </h2>
+      {children}
     </section>
   );
 }
 
-/* ================= flight path ================= */
+/* ================= day timeline ================= */
+
+/** Legend square, same shape language as the Team screen's LegendDot. */
+function LegendDot({
+  color,
+  outline,
+  label,
+}: {
+  color?: string;
+  outline?: boolean;
+  label: string;
+}) {
+  return (
+    <span className="flex items-center gap-[0.3em]">
+      <span
+        className="h-[0.55em] w-[0.55em] rounded-[2px]"
+        style={
+          outline
+            ? { boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.45)" }
+            : { background: color }
+        }
+      />
+      {label}
+    </span>
+  );
+}
 
 /**
  * The workday as one horizontal groove: from min(first meeting, 9am) to
  * max(last meeting, 5pm), snapped to whole hours. Meeting capsules sit flush
- * inside the groove (double-bookings split into two thin lanes), the empty
- * groove reads as free time — upcoming gaps big enough to matter get an
- * explicit "1h 20m free" label — and a breathing red cursor rides at "now"
- * above an hour ruler.
+ * inside the groove (double-bookings split into two thin lanes), elapsed
+ * time is shaded, upcoming free gaps big enough to matter get an explicit
+ * "1h 20m free" label, and a breathing red cursor rides at "now" above an
+ * hour ruler. The eyebrow carries a legend so the encoding reads at a glance.
  *
  * Positioned children keep the parent font size (em offsets on a
  * text-[0.5em] element shrink with it); tiny type lives on inner spans only.
@@ -460,93 +526,112 @@ function FlightPath({
   const nowOnPath = nowMs >= start && nowMs <= end;
 
   return (
-    <div className="relative mx-[0.8em] mb-[0.6em] h-[3.1em] shrink-0">
-      {/* groove — the day itself; empty stretches are free time */}
-      <div
-        className="md-grow-x absolute left-0 right-0 top-[0.5em] h-[1em] rounded-full bg-white/[0.045] shadow-[inset_0_1px_3px_rgba(0,0,0,0.45)]"
-        style={{ animationDelay: "100ms" }}
-      />
-      {/* free-gap labels, centered in their stretch of groove */}
-      {gaps.map((g) => (
-        <div
-          key={g.leftPct}
-          className="md-fade-up absolute top-[0.5em] flex h-[1em] items-center justify-center overflow-hidden"
-          style={{
-            left: `${g.leftPct.toFixed(2)}%`,
-            width: `${g.widthPct.toFixed(2)}%`,
-            animationDelay: "950ms",
-          }}
-        >
-          <span className="whitespace-nowrap text-[0.52em] font-medium tracking-wide text-muted-foreground/75">
-            {g.label}
-          </span>
-        </div>
-      ))}
-      {/* meeting capsules, flush inside the groove */}
-      {events.map((e, i) => {
-        const left = pct(e.startMs);
-        const width = Math.max(0.7, pct(e.endMs) - left);
-        const lane = lanes[i];
-        return (
-          <span
-            key={e.id}
-            title={`${e.summary} · ${fmtTime(e.startISO)}`}
-            className={cn(
-              "md-pop absolute rounded-full",
-              e.status === "now" && "md-live"
-            )}
-            style={{
-              left: `${left.toFixed(2)}%`,
-              width: `${width.toFixed(2)}%`,
-              top: !twoLanes ? "0.5em" : lane === 0 ? "0.52em" : "1.04em",
-              height: !twoLanes ? "1em" : "0.44em",
-              animationDelay: `${320 + i * 55}ms`,
-              ...(e.status === "past"
-                ? { background: DONE_GREEN, opacity: 0.8 }
-                : e.status === "now"
-                  ? { background: ACCENT }
-                  : {
-                      background: "rgba(255,255,255,0.07)",
-                      boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.3)",
-                    }),
-            }}
-          />
-        );
-      })}
-      {/* hour ruler under the groove */}
-      {hours.map((t, i) => (
-        <div
-          key={t}
-          className="md-fade-up absolute -translate-x-1/2"
-          style={{
-            left: `${pct(t).toFixed(2)}%`,
-            top: "1.72em",
-            animationDelay: `${250 + i * 25}ms`,
-          }}
-        >
-          <span className="mx-auto block h-[0.26em] w-px bg-white/15" />
-          <span className="block text-center text-[0.5em] tabular-nums leading-[1.7] text-muted-foreground/60">
-            {fmtHour(t)}
-          </span>
-        </div>
-      ))}
-      {/* now cursor */}
-      {nowOnPath && (
-        <span
-          className="md-fade-up absolute top-[0.12em] z-10 h-[1.75em] w-[2px] -translate-x-1/2 rounded"
-          style={{
-            left: `${nowPct.toFixed(2)}%`,
-            background: NOW_RED,
-            boxShadow: `0 0 6px ${NOW_RED}66`,
-            animationDelay: "850ms",
-          }}
-        >
-          <span
-            className="md-breathe absolute left-1/2 top-0 h-[0.42em] w-[0.42em] -translate-x-1/2 -translate-y-1/2 rounded-full"
-            style={{ background: NOW_RED, boxShadow: `0 0 8px ${NOW_RED}` }}
-          />
+    <div className="mb-[0.55em] shrink-0">
+      {/* eyebrow + legend, mirroring the Team screen's rhythm strip */}
+      <div className="mb-[0.4em] flex items-center text-[0.5em] font-semibold uppercase tracking-widest text-muted-foreground/70">
+        Day timeline
+        <span className="ml-auto flex items-center gap-[1em] font-medium normal-case tracking-normal text-muted-foreground/80">
+          <LegendDot color={DONE_GREEN} label="Done" />
+          <LegendDot color={ACCENT} label="In progress" />
+          <LegendDot outline label="Ahead" />
+          <span className="text-muted-foreground/60">empty = free time</span>
         </span>
-      )}
+      </div>
+
+      <div className="relative mx-[0.5em] h-[2.75em]">
+        {/* groove — the day itself; empty stretches are free time */}
+        <div
+          className="md-grow-x absolute left-0 right-0 top-[0.5em] h-[1em] overflow-hidden rounded-full bg-white/[0.045] shadow-[inset_0_1px_3px_rgba(0,0,0,0.45)]"
+          style={{ animationDelay: "100ms" }}
+        >
+          {/* elapsed shading — time already flown */}
+          <div
+            className="absolute inset-y-0 left-0 bg-white/[0.04]"
+            style={{ width: `${nowPct.toFixed(2)}%` }}
+          />
+        </div>
+        {/* free-gap labels, centered in their stretch of groove */}
+        {gaps.map((g) => (
+          <div
+            key={g.leftPct}
+            className="md-fade-up absolute top-[0.5em] flex h-[1em] items-center justify-center overflow-hidden"
+            style={{
+              left: `${g.leftPct.toFixed(2)}%`,
+              width: `${g.widthPct.toFixed(2)}%`,
+              animationDelay: "950ms",
+            }}
+          >
+            <span className="whitespace-nowrap text-[0.52em] font-medium tracking-wide text-muted-foreground/75">
+              {g.label}
+            </span>
+          </div>
+        ))}
+        {/* meeting capsules, flush inside the groove */}
+        {events.map((e, i) => {
+          const left = pct(e.startMs);
+          const width = Math.max(0.7, pct(e.endMs) - left);
+          const lane = lanes[i];
+          return (
+            <span
+              key={e.id}
+              title={`${e.summary} · ${fmtTime(e.startISO)}`}
+              className={cn(
+                "md-pop absolute rounded-full",
+                e.status === "now" && "md-live"
+              )}
+              style={{
+                left: `${left.toFixed(2)}%`,
+                width: `${width.toFixed(2)}%`,
+                top: !twoLanes ? "0.5em" : lane === 0 ? "0.52em" : "1.04em",
+                height: !twoLanes ? "1em" : "0.44em",
+                animationDelay: `${320 + i * 55}ms`,
+                ...(e.status === "past"
+                  ? { background: DONE_GREEN, opacity: 0.8 }
+                  : e.status === "now"
+                    ? { background: ACCENT }
+                    : {
+                        background: "rgba(255,255,255,0.1)",
+                        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.4)",
+                      }),
+              }}
+            />
+          );
+        })}
+        {/* hour ruler under the groove */}
+        {hours.map((t, i) => (
+          <div
+            key={t}
+            className="md-fade-up absolute -translate-x-1/2"
+            style={{
+              left: `${pct(t).toFixed(2)}%`,
+              top: "1.62em",
+              animationDelay: `${250 + i * 25}ms`,
+            }}
+          >
+            <span className="mx-auto block h-[0.24em] w-px bg-white/15" />
+            <span className="block text-center text-[0.5em] tabular-nums leading-[1.6] text-muted-foreground/60">
+              {fmtHour(t)}
+            </span>
+          </div>
+        ))}
+        {/* now cursor */}
+        {nowOnPath && (
+          <span
+            className="md-fade-up absolute top-[0.12em] z-10 h-[1.75em] w-[2px] -translate-x-1/2 rounded"
+            style={{
+              left: `${nowPct.toFixed(2)}%`,
+              background: NOW_RED,
+              boxShadow: `0 0 6px ${NOW_RED}66`,
+              animationDelay: "850ms",
+            }}
+          >
+            <span
+              className="md-breathe absolute left-1/2 top-0 h-[0.42em] w-[0.42em] -translate-x-1/2 -translate-y-1/2 rounded-full"
+              style={{ background: NOW_RED, boxShadow: `0 0 8px ${NOW_RED}` }}
+            />
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -714,7 +799,7 @@ function DoneRing({ done, total }: { done: number; total: number }) {
   const C = 2 * Math.PI * R;
   const color = frac >= 1 ? DONE_GREEN : ACCENT;
   return (
-    <svg viewBox="0 0 20 20" className="h-[1.4em] w-[1.4em] -rotate-90">
+    <svg viewBox="0 0 20 20" className="h-[1.5em] w-[1.5em] -rotate-90">
       <circle cx="10" cy="10" r={R} fill="none" strokeWidth="3" className="stroke-white/10" />
       <circle
         cx="10"
@@ -732,25 +817,26 @@ function DoneRing({ done, total }: { done: number; total: number }) {
   );
 }
 
-function StatTile({
+/** Icon-chip stat tile, same anatomy as the Team screen's KpiTile. */
+function RailTile({
   icon: Icon,
+  color,
   label,
   value,
   countTo,
   countMinutes,
-  good,
-  bad,
+  valueClass,
   delay,
 }: {
-  icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+  icon: React.ComponentType<{ className?: string }>;
+  color: string;
   label: string;
   value: string;
   /** Count-up integer display (overrides `value` while animating). */
   countTo?: number;
   /** Count-up minutes, formatted as h/m (overrides `value` while animating). */
   countMinutes?: number;
-  good?: boolean;
-  bad?: boolean;
+  valueClass?: string;
   delay: number;
 }) {
   const counted = useCountUp(countMinutes ?? countTo ?? 0);
@@ -762,28 +848,34 @@ function StatTile({
         : value;
   return (
     <div
-      className="md-fade-up rounded-xl border bg-white/[0.03] px-[0.55em] py-[0.5em]"
+      className="md-fade-up flex items-center gap-[0.5em] rounded-xl border bg-white/[0.03] px-[0.55em] py-[0.5em]"
       style={{ animationDelay: `${delay}ms` }}
     >
-      <div
-        className={cn(
-          "flex items-center gap-[0.35em] text-[0.95em] font-bold leading-none tabular-nums",
-          good && "text-green-400",
-          bad && "text-amber-400"
-        )}
+      <span
+        className="flex h-[1.8em] w-[1.8em] shrink-0 items-center justify-center rounded-lg"
+        style={{ background: `${color}1f`, color }}
       >
-        <Icon className="h-[0.85em] w-[0.85em] shrink-0 opacity-60" />
-        {shown}
-      </div>
-      <div className="mt-[0.4em] truncate text-[0.48em] font-semibold uppercase tracking-widest text-muted-foreground">
-        {label}
+        <Icon className="h-[1em] w-[1em]" />
+      </span>
+      <div className="min-w-0">
+        <div
+          className={cn(
+            "truncate text-[1.05em] font-bold leading-none tabular-nums",
+            valueClass
+          )}
+        >
+          {shown}
+        </div>
+        <div className="mt-[0.35em] truncate text-[0.46em] font-semibold uppercase tracking-widest text-muted-foreground">
+          {label}
+        </div>
       </div>
     </div>
   );
 }
 
 /** Next-workday pre-read; "Tomorrow" or the weekday name when Friday. */
-function TomorrowCard({
+function TomorrowPanel({
   preview,
   tomorrowMs,
 }: {
@@ -799,31 +891,35 @@ function TomorrowCard({
   const overflow = preview.events.length - shown.length;
 
   return (
-    <div
-      className="md-fade-up shrink-0 rounded-xl border bg-white/[0.02] p-[0.7em]"
-      style={{ animationDelay: "500ms" }}
-    >
-      <h3 className="mb-[0.5em] flex items-baseline gap-[0.5em] text-[0.55em] font-semibold uppercase tracking-widest text-muted-foreground">
-        <Sunrise className="h-[1.2em] w-[1.2em] shrink-0 self-center text-amber-300/80" />
-        {label} — {day.toLocaleDateString([], { month: "long", day: "numeric" })}
+    <Panel
+      className="wallboard-fade-up shrink-0 [animation-delay:380ms]"
+      dotColor={AMBER}
+      title={
+        <>
+          Up next · {label} —{" "}
+          {day.toLocaleDateString([], { month: "long", day: "numeric" })}
+        </>
+      }
+      titleRight={
         <span className="ml-auto font-medium normal-case tracking-normal text-muted-foreground/80">
           {preview.events.length} meeting{preview.events.length === 1 ? "" : "s"}
         </span>
-      </h3>
-      <div className="flex flex-col gap-[0.3em]">
+      }
+    >
+      <div className="flex flex-col gap-[0.35em]">
         {shown.map((e, i) => (
           <div
             key={e.id}
-            className="md-fade-up flex items-center gap-[0.6em]"
-            style={{ animationDelay: `${560 + i * 55}ms` }}
+            className="md-fade-up flex items-center gap-[0.6em] rounded-md bg-white/[0.025] px-[0.6em] py-[0.35em]"
+            style={{ animationDelay: `${460 + i * 55}ms` }}
           >
-            <span className="w-[7.4em] shrink-0 whitespace-nowrap text-right text-[0.6em] font-medium tabular-nums text-muted-foreground">
+            <span className="w-[4.6em] shrink-0 text-right text-[0.66em] font-semibold tabular-nums text-foreground/85">
               {fmtTime(e.startISO)}
             </span>
             <span
               className={cn(
-                "truncate text-[0.66em] text-foreground/85",
-                e.response === "tentative" && "italic text-foreground/60"
+                "min-w-0 truncate text-[0.66em] text-foreground/75",
+                e.response === "tentative" && "italic text-foreground/55"
               )}
             >
               {e.summary}
@@ -831,16 +927,16 @@ function TomorrowCard({
           </div>
         ))}
         {overflow > 0 && (
-          <div className="pl-[5em] text-[0.55em] text-muted-foreground/70">
+          <span className="pl-[0.6em] text-[0.55em] text-muted-foreground/70">
             +{overflow} more
-          </div>
+          </span>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }
 
-function TasksCard({
+function TasksPanel({
   tasksData,
   dateStr,
   overdueCount,
@@ -853,30 +949,27 @@ function TasksCard({
   const shown = tasks.slice(0, TASKS_MAX_ROWS);
   const overflow = tasks.length - shown.length;
 
-  /** "3d overdue" for a past-due date-only stamp. */
-  const overdueDays = (due: string) => {
-    const days = Math.round(
+  /** Whole days a date-only due stamp is behind today. */
+  const overdueDays = (due: string) =>
+    Math.round(
       (new Date(`${dateStr}T00:00:00`).getTime() -
         new Date(`${due}T00:00:00`).getTime()) /
         (24 * 60 * 60 * 1000)
     );
-    return days;
-  };
 
   return (
-    <div
-      className="md-fade-up flex min-h-0 flex-1 flex-col rounded-xl border bg-white/[0.02] p-[0.7em]"
-      style={{ animationDelay: "440ms" }}
-    >
-      <h3 className="mb-[0.5em] flex shrink-0 items-center gap-[0.5em] text-[0.55em] font-semibold uppercase tracking-widest text-muted-foreground">
-        <ListTodo className="h-[1.2em] w-[1.2em] shrink-0 text-muted-foreground" />
-        Tasks due today
-        {overdueCount > 0 && (
+    <Panel
+      className="wallboard-fade-up min-h-0 flex-1 [animation-delay:460ms]"
+      dotColor={ACCENT}
+      title="Tasks due today"
+      titleRight={
+        overdueCount > 0 ? (
           <span className="ml-auto font-semibold normal-case tracking-normal text-amber-400">
             {overdueCount} overdue
           </span>
-        )}
-      </h3>
+        ) : undefined
+      }
+    >
       {!tasksData ? (
         <span className="text-[0.6em] text-muted-foreground">Loading…</span>
       ) : tasksData.connected === false ? (
@@ -889,14 +982,14 @@ function TasksCard({
           Nothing due — task list clear
         </span>
       ) : (
-        <div className="wallboard-noscrollbar flex min-h-0 flex-col gap-[0.4em] overflow-y-auto">
+        <div className="wallboard-noscrollbar flex min-h-0 flex-col gap-[0.35em] overflow-y-auto">
           {shown.map((t, i) => {
             const days = overdueDays(t.due);
             return (
               <div
                 key={t.id}
-                className="md-fade-up flex items-center gap-[0.5em]"
-                style={{ animationDelay: `${500 + i * 50}ms` }}
+                className="md-fade-up flex items-center gap-[0.55em] rounded-md bg-white/[0.025] px-[0.6em] py-[0.38em]"
+                style={{ animationDelay: `${540 + i * 50}ms` }}
               >
                 <CircleDashed
                   className={cn(
@@ -920,13 +1013,13 @@ function TasksCard({
             );
           })}
           {overflow > 0 && (
-            <div className="pl-[1.3em] text-[0.55em] text-muted-foreground/70">
+            <span className="pl-[0.6em] text-[0.55em] text-muted-foreground/70">
               +{overflow} more
-            </div>
+            </span>
           )}
         </div>
       )}
-    </div>
+    </Panel>
   );
 }
 
