@@ -103,7 +103,10 @@ export default function TeamScreen({ dayStartISO }: { dayStartISO: string }) {
   const overflow = people.length - shown.length;
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-muted/20 p-[0.9em]">
+    // The whole section is the morph target (wb-main): the sprint board /
+    // My Day panel grows into this one framed box, and the dev rows +
+    // rhythm strip stay contained inside it instead of floating free.
+    <section className="wb-vt wb-vt-main flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-muted/20 p-[0.9em]">
       <h2 className="mb-[0.7em] flex shrink-0 items-center gap-[0.5em] text-[0.7em] font-semibold uppercase tracking-widest text-muted-foreground">
         Developer Activity — Today
         <span className="ml-auto flex items-center gap-[1em] text-[0.85em] font-medium normal-case tracking-normal text-muted-foreground/80">
@@ -131,6 +134,7 @@ export default function TeamScreen({ dayStartISO }: { dayStartISO: string }) {
                 color={k.color}
                 value={people.reduce((n, d) => n + k.of(d), 0)}
                 delay={i * 70}
+                className={`wb-vt wb-vt-kpi-${i}`}
               />
             ))}
           </div>
@@ -234,17 +238,22 @@ function KpiTile({
   color,
   value,
   delay,
+  className,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   color: string;
   value: number;
   delay: number;
+  className?: string;
 }) {
   const shown = useCountUp(value);
   return (
     <div
-      className="ts-fade-up flex items-center gap-[0.6em] rounded-xl border bg-white/[0.03] px-[0.75em] py-[0.55em]"
+      className={cn(
+        "ts-fade-up flex items-center gap-[0.6em] rounded-xl border bg-white/[0.03] px-[0.75em] py-[0.55em]",
+        className
+      )}
       style={{ animationDelay: `${delay}ms` }}
     >
       <span

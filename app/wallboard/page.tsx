@@ -8,8 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import useSWR from "swr";
-import { CalendarCheck, CalendarClock, Volume2, VolumeX } from "lucide-react";
+import { CalendarCheck, CalendarClock, Pause, Volume2, VolumeX } from "lucide-react";
 import { useTicketData } from "@/lib/ticket-data-context";
 import { cn } from "@/lib/utils";
 import {
@@ -509,16 +510,32 @@ export default function WallboardPage() {
   // hidden mid-standup.
   const [screenIdx, setScreenIdx] = useState(0);
   const [pinnedScreen, setPinnedScreen] = useState<Screen | null>(null);
+  const [paused, setPaused] = useState(false);
   const rotateGateRef = useRef({ busy: false });
   rotateGateRef.current.busy = toasts.length > 0 || meetingToast !== null;
   useEffect(() => {
-    if (pinnedScreen) return;
+    if (pinnedScreen || paused) return;
     const id = setInterval(() => {
       if (rotateGateRef.current.busy) return;
       setScreenIdx((i) => (i + 1) % SCREENS.length);
     }, ROTATE_MS);
     return () => clearInterval(id);
-  }, [pinnedScreen]);
+  }, [pinnedScreen, paused]);
+  // Manually step to another screen. Clears any pin and lands on the target
+  // relative to whatever is currently shown; leaves the paused state alone so
+  // you can pause and then step through by hand.
+  const advance = useCallback(
+    (dir: 1 | -1) => {
+      setPinnedScreen((pin) => {
+        setScreenIdx((i) => {
+          const shown = pin ? SCREENS.indexOf(pin) : i;
+          return (shown + dir + SCREENS.length) % SCREENS.length;
+        });
+        return null;
+      });
+    },
+    [],
+  );
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -527,19 +544,54 @@ export default function WallboardPage() {
       if (e.key === "1") setPinnedScreen("sprint");
       else if (e.key === "2") setPinnedScreen("team");
       else if (e.key === "3") setPinnedScreen("myday");
-      else if (e.key === "0") setPinnedScreen(null);
+      else if (e.key === "0") {
+        setPinnedScreen(null);
+        setPaused(false);
+      } else if (e.key === "ArrowRight" || e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        advance(1);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        advance(-1);
+      } else if (e.key === " " || e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        setPaused((p) => !p);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [advance]);
   const targetScreen: Screen = pinnedScreen ?? SCREENS[screenIdx];
 
-  // Two-phase screen swap: play a quick fade/slide-out on the current screen,
-  // then mount the next one (keyed, so its entrance animations replay).
+  // Screen swap. Preferred path: a View Transition — the browser snapshots
+  // the outgoing screen, the incoming one is committed synchronously, and
+  // boxes sharing a view-transition-name (wb-main, wb-rail, wb-kpi-N…) morph
+  // between their old and new geometry while everything else cross-fades.
+  // Calling startViewTransition again mid-flight auto-skips the previous one,
+  // so rapid pinning (1/2/3) needs no queueing. Fallback (no support, or
+  // reduced motion): the original two-phase fade/slide-out → keyed remount.
   const [screen, setScreen] = useState<Screen>(targetScreen);
   const [screenLeaving, setScreenLeaving] = useState(false);
+  // True once a morph swap has happened; suppresses the wrapper's own
+  // screen-in animation and the named boxes' fade-ups (the morph replaces
+  // them), while the very first mount keeps its full entrance choreography.
+  const [morphed, setMorphed] = useState(false);
   useEffect(() => {
     if (targetScreen === screen) return;
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+    if (document.startViewTransition && !reduceMotion) {
+      document.startViewTransition(() => {
+        // flushSync so the new screen is in the DOM before the browser
+        // captures the "new" snapshots (the standard React 18 pattern).
+        flushSync(() => {
+          setScreen(targetScreen);
+          setMorphed(true);
+        });
+      });
+      return;
+    }
     setScreenLeaving(true);
     const id = setTimeout(() => {
       setScreen(targetScreen);
@@ -683,7 +735,7 @@ export default function WallboardPage() {
       style={{ fontSize: "20px" }}
     >
       {/* ---- Header ---- */}
-      <header className="flex shrink-0 items-center gap-[0.9em] px-[0.2em]">
+      <header className="wb-vt-header flex shrink-0 items-center gap-[0.9em] px-[0.2em]">
         <h1 className="flex items-center gap-[0.45em] text-[1.35em] font-bold tracking-tight">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -699,6 +751,15 @@ export default function WallboardPage() {
           </span>
         )}
         <div className="ml-auto flex items-center gap-[0.6em]">
+          {paused && (
+            <span
+              className="flex items-center gap-[0.3em] rounded-full bg-amber-500/15 px-[0.6em] py-[0.2em] text-[0.55em] font-semibold uppercase tracking-wide text-amber-400"
+              title="Auto-rotation paused — press Space or P to resume"
+            >
+              <Pause className="h-[1em] w-[1em]" />
+              Paused
+            </span>
+          )}
           {soundOn && !unlocked && (
             <span className="animate-pulse text-[0.6em] text-muted-foreground">
               click anywhere to enable sound
@@ -747,7 +808,10 @@ export default function WallboardPage() {
         key={screen}
         className={cn(
           "flex min-h-0 flex-1 flex-col gap-[0.7em]",
-          screenLeaving ? "wallboard-screen-out" : "wallboard-screen-in"
+          morphed && "wallboard-morph",
+          screenLeaving
+            ? "wallboard-screen-out"
+            : !morphed && "wallboard-screen-in"
         )}
       >
       {screen === "team" ? (
@@ -764,6 +828,7 @@ export default function WallboardPage() {
           unconfigured={dd?.configured === false}
           spark={dd?.activeUsersSpark}
           delay={0}
+          className="wb-vt wb-vt-kpi-0"
         />
         <StatTile
           label="Page views today"
@@ -773,6 +838,7 @@ export default function WallboardPage() {
           delta={dd && dd.configured !== false ? deltaPct(dd.pageViews, dd.pageViewsPrev) : null}
           upIsGood
           delay={70}
+          className="wb-vt wb-vt-kpi-1"
         />
         <StatTile
           label="Rage clicks today"
@@ -782,6 +848,7 @@ export default function WallboardPage() {
           delta={dd && dd.configured !== false ? deltaPct(dd.rageClicks, dd.rageClicksPrev) : null}
           bad={!!dd && dd.configured !== false && dd.rageClicks >= 200}
           delay={140}
+          className="wb-vt wb-vt-kpi-2"
         />
         <StatTile
           label="Page load (LCP p75)"
@@ -795,6 +862,7 @@ export default function WallboardPage() {
           good={!!dd && dd.configured !== false && dd.lcpP75Ms !== null && dd.lcpP75Ms <= 2500}
           bad={!!dd && dd.configured !== false && dd.lcpP75Ms !== null && dd.lcpP75Ms > 4000}
           delay={210}
+          className="wb-vt wb-vt-kpi-3"
         />
         <StatTile
           label="Sessions with errors"
@@ -803,6 +871,7 @@ export default function WallboardPage() {
           delta={dd && dd.configured !== false ? deltaPct(dd.errorSessionPct, dd.errorSessionPctPrev) : null}
           bad={!!dd && dd.configured !== false && dd.errorSessionPct >= 25}
           delay={280}
+          className="wb-vt wb-vt-kpi-4"
         />
       </div>
 
@@ -814,7 +883,7 @@ export default function WallboardPage() {
               ? `${sprint.name}${sprintMeta ? ` · Day ${sprintMeta.day} of ${sprintMeta.total}` : ""} · ${doneCount} of ${tickets.length} tickets done`
               : "Sprint Board — by story"
           }
-          className="wallboard-fade-up flex-[2.4] [animation-delay:120ms]"
+          className="wallboard-fade-up wb-vt wb-vt-main flex-[2.4] [animation-delay:120ms]"
         >
           {BOARD === "scrolling" ? (
             <ScrollingStoryBoard
@@ -840,7 +909,7 @@ export default function WallboardPage() {
 
           <Panel
             title="Activity Feed"
-            className="wallboard-fade-up min-h-0 flex-1 [animation-delay:280ms]"
+            className="wallboard-fade-up wb-vt wb-vt-rail min-h-0 flex-1 [animation-delay:280ms]"
             dotColor={ACCENT}
           >
             <div className="flex min-h-0 flex-1 flex-col gap-[0.5em] overflow-hidden">
@@ -1012,6 +1081,42 @@ export default function WallboardPage() {
         @keyframes wallboard-screen-out {
           from { opacity: 1; transform: translateY(0) scale(1); }
           to { opacity: 0; transform: translateY(-0.7em) scale(0.996); }
+        }
+        /* ---- Morph transitions (View Transitions API) ----
+           Boxes that play the same role on different screens share a
+           view-transition-name, so on a screen swap the browser animates one
+           box's frame into the other's (KPI tiles tile-to-tile, the big main
+           panel, the rail). Defined here (not per screen) since the page's
+           style block is mounted for every screen. */
+        .wb-vt-header { view-transition-name: wb-header; }
+        .wb-vt-main { view-transition-name: wb-main; }
+        .wb-vt-rail { view-transition-name: wb-rail; }
+        .wb-vt-rail-top { view-transition-name: wb-rail-top; }
+        .wb-vt-kpi-0 { view-transition-name: wb-kpi-0; }
+        .wb-vt-kpi-1 { view-transition-name: wb-kpi-1; }
+        .wb-vt-kpi-2 { view-transition-name: wb-kpi-2; }
+        .wb-vt-kpi-3 { view-transition-name: wb-kpi-3; }
+        .wb-vt-kpi-4 { view-transition-name: wb-kpi-4; }
+        /* Once swaps are morph-driven, a named box must not ALSO play its own
+           fade-up (the morph owns the container; children keep their
+           staggers). First mount has no .wallboard-morph, so the full
+           entrance choreography still plays there. */
+        .wallboard-morph .wb-vt { animation: none; }
+        ::view-transition-group(*) {
+          animation-duration: 0.55s;
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        ::view-transition-old(root),
+        ::view-transition-new(root) {
+          animation-duration: 0.45s;
+        }
+        /* Snapshots fill the morphing frame and crop instead of stretching,
+           so panel text never squashes mid-flight. */
+        ::view-transition-old(*),
+        ::view-transition-new(*) {
+          height: 100%;
+          width: 100%;
+          object-fit: cover;
         }
         /* Shared entrance stagger (tiles, panels, rows) + bar-grow, same
            curves as the Team screen's ts-* set. From-only keyframes with a
@@ -1496,7 +1601,7 @@ function PullRequestsPanel({ gh }: { gh?: GitHubSummary }) {
   return (
     <Panel
       title="Pull Requests"
-      className="wallboard-fade-up shrink-0 [animation-delay:200ms]"
+      className="wallboard-fade-up wb-vt wb-vt-rail-top shrink-0 [animation-delay:200ms]"
       dotColor="#3fb950"
     >
       {!gh ? (
@@ -1603,6 +1708,7 @@ function StatTile({
   good,
   bad,
   delay,
+  className,
 }: {
   label: string;
   value: string | number | null;
@@ -1616,12 +1722,16 @@ function StatTile({
   bad?: boolean;
   /** Entrance-stagger offset (ms); replays whenever the screen mounts. */
   delay?: number;
+  className?: string;
 }) {
   const showDelta = typeof delta === "number" && Math.abs(delta) >= 1;
   const improving = showDelta && (delta > 0) === !!upIsGood;
   return (
     <div
-      className="wallboard-fade-up rounded-xl border bg-muted/20 px-[0.6em] py-[0.45em]"
+      className={cn(
+        "wallboard-fade-up rounded-xl border bg-muted/20 px-[0.6em] py-[0.45em]",
+        className
+      )}
       style={{ animationDelay: `${delay ?? 0}ms` }}
     >
       <div className="flex min-w-0 items-baseline gap-[0.35em]">

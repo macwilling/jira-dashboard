@@ -202,7 +202,7 @@ export default function MyDayScreen({
     <div className="flex min-h-0 flex-1 gap-[0.7em]">
       {/* ---- main panel: timeline + agenda ---- */}
       <Panel
-        className="wallboard-fade-up flex-[2.4] [animation-delay:80ms]"
+        className="wallboard-fade-up wb-vt wb-vt-main flex-[2.4] [animation-delay:80ms]"
         title={
           <>
             My Day — {dateLabel}
@@ -285,6 +285,7 @@ export default function MyDayScreen({
             value={meetingMs > 0 ? fmtSpan(meetingMs) : "—"}
             countMinutes={Math.round(meetingMs / 60_000)}
             delay={160}
+            className="wb-vt wb-vt-kpi-0"
           />
           <RailTile
             icon={CalendarCheck}
@@ -293,6 +294,7 @@ export default function MyDayScreen({
             value={clearFrom}
             valueClass={clearNow ? "text-green-400" : undefined}
             delay={230}
+            className="wb-vt wb-vt-kpi-1"
           />
           <RailTile
             icon={ListTodo}
@@ -302,6 +304,7 @@ export default function MyDayScreen({
             countTo={tasksData ? tasks.length : undefined}
             valueClass={overdueCount > 0 ? "text-amber-400" : undefined}
             delay={300}
+            className="wb-vt wb-vt-kpi-2"
           />
         </div>
 
@@ -827,6 +830,7 @@ function RailTile({
   countMinutes,
   valueClass,
   delay,
+  className,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   color: string;
@@ -838,6 +842,7 @@ function RailTile({
   countMinutes?: number;
   valueClass?: string;
   delay: number;
+  className?: string;
 }) {
   const counted = useCountUp(countMinutes ?? countTo ?? 0);
   const shown =
@@ -848,7 +853,10 @@ function RailTile({
         : value;
   return (
     <div
-      className="md-fade-up flex items-center gap-[0.5em] rounded-xl border bg-white/[0.03] px-[0.55em] py-[0.5em]"
+      className={cn(
+        "md-fade-up flex items-center gap-[0.5em] rounded-xl border bg-white/[0.03] px-[0.55em] py-[0.5em]",
+        className
+      )}
       style={{ animationDelay: `${delay}ms` }}
     >
       <span
@@ -892,7 +900,7 @@ function TomorrowPanel({
 
   return (
     <Panel
-      className="wallboard-fade-up shrink-0 [animation-delay:380ms]"
+      className="wallboard-fade-up wb-vt wb-vt-rail-top shrink-0 [animation-delay:380ms]"
       dotColor={AMBER}
       title={
         <>
@@ -959,7 +967,7 @@ function TasksPanel({
 
   return (
     <Panel
-      className="wallboard-fade-up min-h-0 flex-1 [animation-delay:460ms]"
+      className="wallboard-fade-up wb-vt wb-vt-rail min-h-0 flex-1 [animation-delay:460ms]"
       dotColor={ACCENT}
       title="Tasks due today"
       titleRight={
