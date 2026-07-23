@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDayEvents, hasGoogleConfig } from "@/lib/google/client";
+import {
+  getDayEvents,
+  getTaskStatusMap,
+  hasGoogleConfig,
+} from "@/lib/google/client";
 
 // Calendar events for the wallboard "My Day" screen. `dayStart` is the
 // viewer's local midnight as an ISO stamp (the server can't know the TV's
@@ -19,6 +23,21 @@ export async function GET(req: NextRequest) {
   const days = Math.min(7, Math.max(1, Number.isNaN(daysRaw) ? 1 : daysRaw));
   try {
     const events = await getDayEvents(dayStart, days);
+    // Resolve completion for scheduled tasks on the single-day view (the My Day
+    // agenda). Skipped for the multi-day pre-read — future tasks aren't "done"
+    // yet — and best-effort: a missing Tasks scope just leaves taskCompleted null.
+    if (days === 1 && events.some((e) => e.taskSlug)) {
+      try {
+        const statuses = await getTaskStatusMap();
+        for (const e of events) {
+          if (e.taskSlug && e.taskSlug in statuses) {
+            e.taskCompleted = statuses[e.taskSlug];
+          }
+        }
+      } catch {
+        // leave taskCompleted null — the screen degrades to "open/scheduled".
+      }
+    }
     return NextResponse.json({ events, connected: true });
   } catch (e) {
     const msg = (e as Error).message;

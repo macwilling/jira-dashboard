@@ -651,6 +651,15 @@ export async function getNextMeeting(): Promise<UpcomingMeeting | null> {
   return null;
 }
 
+/** Raw Google `eventType`; the enum values events.list can return by default. */
+export type CalendarEventType =
+  | "default"
+  | "focusTime"
+  | "outOfOffice"
+  | "workingLocation"
+  | "fromGmail"
+  | "birthday";
+
 export interface DayCalendarEvent {
   id: string;
   summary: string;
@@ -660,7 +669,32 @@ export interface DayCalendarEvent {
   endISO: string;
   location: string | null;
   response: "accepted" | "tentative" | "needsAction" | null;
+  /** Raw Google eventType — drives focus-time / out-of-office classification. */
+  eventType: CalendarEventType;
+  /**
+   * Attendee count including self (0 when the event has no guests). Separates
+   * real meetings / 1:1s from solo holds ("block" time).
+   */
+  attendeeCount: number;
+  /**
+   * Google Tasks slug when this "event" is really a scheduled task. A timed
+   * Google Task surfaces in the calendar as a `focusTime` event whose
+   * description links to `tasks.google.com/task/<slug>`; that slug is the
+   * base64url-decode of the Tasks API id, so it joins the two systems. Null
+   * for genuine events. (Confirmed empirically 2026-07 — Google exposes no
+   * `task` eventType.)
+   */
+  taskSlug: string | null;
+  /**
+   * Completion of the linked task, resolved by the route against the Tasks API
+   * (see getTaskStatusMap). Only populated for today's events; null when this
+   * isn't a task or completion wasn't resolved.
+   */
+  taskCompleted: boolean | null;
 }
+
+/** tasks.google.com/task/<slug> embedded in a scheduled task's description. */
+const TASK_LINK_RE = /tasks\.google\.com\/task\/([\w-]+)/;
 
 /**
  * Every event on the primary calendar in the `days`-long window starting at
@@ -694,7 +728,9 @@ export async function getDayEvents(
       id: string;
       status?: string;
       summary?: string;
+      description?: string;
       location?: string;
+      eventType?: string;
       start?: { dateTime?: string; date?: string };
       end?: { dateTime?: string; date?: string };
       attendees?: Array<{ self?: boolean; responseStatus?: string }>;
@@ -723,9 +759,65 @@ export async function getDayEvents(
       endISO,
       location: ev.location ?? null,
       response,
+      eventType: (ev.eventType as CalendarEventType) || "default",
+      attendeeCount: ev.attendees?.length ?? 0,
+      taskSlug: ev.description?.match(TASK_LINK_RE)?.[1] ?? null,
+      taskCompleted: null,
     });
   }
   return events;
+}
+
+/**
+ * Map of Google Tasks slug → completed?, spanning every task list and
+ * INCLUDING completed (and thus hidden) tasks. The key is the base64url-decode
+ * of the Tasks API id, which is exactly the slug a scheduled task's calendar
+ * event links to (see DayCalendarEvent.taskSlug) — so the wallboard can tell
+ * whether a task block was finished or left open. Best-effort per list.
+ */
+export async function getTaskStatusMap(): Promise<Record<string, boolean>> {
+  const token = await getAccessToken();
+  const auth = { Authorization: `Bearer ${token}` };
+  const listsRes = await fetch(
+    "https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=100",
+    { headers: auth, cache: "no-store" },
+  );
+  if (!listsRes.ok) throw new Error(`Tasks API error: ${listsRes.status}`);
+  const lists = ((await listsRes.json()) as { items?: TaskList[] }).items ?? [];
+
+  const out: Record<string, boolean> = {};
+  await Promise.all(
+    lists.map(async (l) => {
+      const params = new URLSearchParams({
+        showCompleted: "true",
+        showHidden: "true", // completed tasks are hidden by default
+        maxResults: "100",
+      });
+      const res = await fetch(
+        `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(l.id)}/tasks?${params}`,
+        { headers: auth, cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        items?: Array<{ id: string; status?: string }>;
+      };
+      for (const t of data.items ?? []) {
+        const slug = decodeTaskId(t.id);
+        if (slug) out[slug] = t.status === "completed";
+      }
+    }),
+  );
+  return out;
+}
+
+/** Google Tasks id → its tasks.google.com/task/<slug>; base64url-decoded. */
+function decodeTaskId(id: string): string | null {
+  try {
+    const slug = Buffer.from(id, "base64url").toString("utf8");
+    return /^[\w-]+$/.test(slug) ? slug : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Delete a Calendar event. 404 / 410 are treated as success (already gone). */

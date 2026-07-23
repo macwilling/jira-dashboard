@@ -1,44 +1,62 @@
 "use client";
 
 /**
- * "My Day" screen for the rotating wallboard — the facilitator's own day.
+ * "My Day" screen for the rotating wallboard — the facilitator's own day,
+ * read at a glance from across the room.
  *
- * Mirrors the sprint screen's architecture (main panel + rail of Panels):
+ * Every timed calendar item is classified into a *kind* (meeting · focus ·
+ * out-of-office · task · block) and that kind drives its colour and glyph
+ * everywhere, so the shape of the day is legible instantly: a wall of blue
+ * meetings, a purple focus block, a green task. Scheduled Google Tasks (which
+ * Google files as focusTime events — see ../myday and lib/google/client) are
+ * detected via their tasks.google.com link and carry live completion: a done
+ * task goes green with a check, one whose time slid by while still open turns
+ * amber "left open". Due to-dos that are *not* yet time-blocked live in the
+ * rail, so nothing is shown twice.
  *
- *   Main panel — "Day timeline" strip (the workday as one groove: meeting
- *   capsules flush inside it, double-bookings split into two lanes, elapsed
- *   time shaded, upcoming free gaps labeled, breathing red cursor at now,
- *   legend on the eyebrow) above a spined agenda: finished meetings dim out
- *   behind pop-in green checks, an in-progress one glows with a live elapsed
- *   bar, upcoming ones count down, and a sheened banner lands when the day
- *   is clear.
+ * Layout, top to bottom:
  *
- *   Rail — icon-chip day stats (time in meetings / when you're clear / tasks
- *   due), a next-workday pre-read panel (weekends and empty weekdays skipped;
- *   see pickPreviewDay), and a Google Tasks due-today panel.
+ *   Hero timeline — the whole workday as one full-width band. Blocks are tall
+ *   enough to carry their own titles, coloured by kind, dimming as they pass;
+ *   free gaps are labelled; a red cursor rides at "now" over an hour ruler.
  *
- * Everything animates in staggered on mount, and the screen remounts on
- * every rotation, so the choreography replays each time it comes around.
+ *   Below, split: the agenda (spined list — past items dim, the live one
+ *   carries a steady glow and elapsed bar, the next counts down, tasks show
+ *   their state) and a rail of four big KPI tiles (meeting load · focus time ·
+ *   free at · tasks), the next-workday pre-read, and unscheduled to-dos due.
+ *
+ * Animation policy: entrance choreography replays on every rotation (the
+ * screen remounts), but only ONE element is allowed to pulse continuously —
+ * the now-cursor dot on the hero timeline. Everything else that's "live"
+ * holds a steady glow instead, so the board reads calm from across the room.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import {
   CalendarCheck,
-  CalendarDays,
   Check,
   CircleDashed,
-  Clock,
+  Focus,
   ListTodo,
+  Lock,
   MapPin,
+  Plane,
+  Square,
+  SquareCheckBig,
   Sunrise,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   DayEvent,
   DueTask,
+  EventKind,
+  classifyKind,
+  decodeTaskSlug,
   localDateStr,
   pickPreviewDay,
+  unionMs,
 } from "../myday";
 
 export type { DayEvent };
@@ -47,8 +65,22 @@ const ACCENT = "#4493f8";
 const DONE_GREEN = "#3fb950";
 const NOW_RED = "#f87171";
 const AMBER = "#e3b341";
+const FOCUS_PURPLE = "#a371f7";
+const OOO_ORANGE = "#db8f4a";
+const SLATE = "#8b949e";
 const PREVIEW_MAX_ROWS = 5;
 const TASKS_MAX_ROWS = 8;
+
+type IconCmp = React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+
+/** Per-kind glyph + colour + short label — the screen's visual vocabulary. */
+const KIND_META: Record<EventKind, { label: string; color: string; Icon: IconCmp }> = {
+  meeting: { label: "Meeting", color: ACCENT, Icon: Users },
+  focus: { label: "Focus", color: FOCUS_PURPLE, Icon: Focus },
+  ooo: { label: "Out of office", color: OOO_ORANGE, Icon: Plane },
+  task: { label: "Task", color: DONE_GREEN, Icon: SquareCheckBig },
+  block: { label: "Block", color: SLATE, Icon: Lock },
+};
 
 /**
  * Shared with the wallboard page header (MeetingCountdown polls the calendar
@@ -78,6 +110,12 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 const fmtTime = (iso: string) =>
   new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+/** "4:45p" — compact for the stat tiles. */
+const fmtTimeCompact = (ms: number) =>
+  new Date(ms)
+    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    .replace(/\s?([AP])M/i, (_, m: string) => m.toLowerCase());
 
 const fmtHour = (ms: number) =>
   new Date(ms)
@@ -112,11 +150,24 @@ function useCountUp(target: number, ms = 900): number {
 }
 
 type EvStatus = "past" | "now" | "future";
+type TaskState = "done" | "open" | "missed";
 
 interface AgendaEvent extends DayEvent {
+  kind: EventKind;
   status: EvStatus;
   startMs: number;
   endMs: number;
+}
+
+/** done = finished; open = still ahead; missed = time slid by, never ticked. */
+function taskState(e: AgendaEvent): TaskState {
+  if (e.taskCompleted) return "done";
+  return e.status === "past" ? "missed" : "open";
+}
+
+/** A meeting/focus/block is "done" once it ends; a task only once completed. */
+function isDone(e: AgendaEvent): boolean {
+  return e.kind === "task" ? !!e.taskCompleted : e.status === "past";
 }
 
 export default function MyDayScreen({
@@ -141,7 +192,7 @@ export default function MyDayScreen({
       const endMs = new Date(e.endISO).getTime();
       const status: EvStatus =
         endMs <= nowMs ? "past" : startMs <= nowMs ? "now" : "future";
-      return { ...e, status, startMs, endMs };
+      return { ...e, kind: classifyKind(e), status, startMs, endMs };
     };
     return {
       timed: events.filter((e) => !e.allDay).map(enrich),
@@ -149,31 +200,58 @@ export default function MyDayScreen({
     };
   }, [data, nowMs]);
 
-  const doneCount = timed.filter((e) => e.status === "past").length;
-  const allDone = timed.length > 0 && doneCount === timed.length;
+  // Meetings drive the header ring + "all clear" banner; tasks track separately.
+  const meetings = timed.filter((e) => e.kind === "meeting");
+  const meetingsDone = meetings.filter((e) => e.status === "past").length;
+  const allMeetingsDone = meetings.length > 0 && meetingsDone === meetings.length;
   const inProgress = timed.some((e) => e.status === "now");
   const nextIdx = timed.findIndex((e) => e.status === "future");
   // The red "now" rule sits before the first future event — but only between
-  // meetings; an in-progress event's own badge already marks the moment.
+  // items; an in-progress one's own badge already marks the moment.
   const nowMarkerIdx = inProgress ? -1 : nextIdx === -1 ? timed.length : nextIdx;
 
-  // Day stats for the rail tiles.
-  const meetingMs = timed.reduce((n, e) => n + (e.endMs - e.startMs), 0);
+  // Scheduled tasks today + their completion.
+  const tasksToday = timed.filter((e) => e.kind === "task");
+  const tasksDone = tasksToday.filter((e) => e.taskCompleted).length;
+  const tasksMissed = tasksToday.filter((e) => taskState(e) === "missed").length;
+  const scheduledSlugs = useMemo(
+    () => new Set(tasksToday.map((e) => e.taskSlug).filter(Boolean) as string[]),
+    [tasksToday],
+  );
+
+  // Day stats for the KPI tiles. "Focus time" = the solo time you own: focus
+  // blocks, scheduled tasks, and plain holds. Both totals union overlapping
+  // items so a task nested in a focus block (or a double-booked meeting) counts
+  // as wall-clock time once, not twice.
+  const meetingMs = unionMs(meetings);
+  const ownMs = unionMs(
+    timed.filter((e) => e.kind === "focus" || e.kind === "task" || e.kind === "block"),
+  );
   const lastEndMs = timed.reduce((n, e) => Math.max(n, e.endMs), 0);
   const clearNow = timed.length === 0 || lastEndMs <= nowMs;
-  const clearFrom = clearNow ? "Now" : fmtTime(new Date(lastEndMs).toISOString());
+  const clearFrom = clearNow ? "Now" : fmtTimeCompact(lastEndMs);
 
-  // ---- tasks due today / overdue ----
+  // ---- tasks due today / overdue (rail) ----
   const { data: tasksData } = useSWR<TasksResp>(tasksKey(dateStr), fetcher, {
     refreshInterval: TASKS_REFRESH_MS,
     revalidateOnFocus: false,
   });
-  const tasks = tasksData?.tasks ?? [];
-  const overdueCount = tasks.filter((t) => t.due < dateStr).length;
+  // Drop to-dos already time-blocked on the calendar — those show on the
+  // timeline with their own completion, so the rail only carries the floaters.
+  const railTasks = useMemo(() => {
+    const all = tasksData?.tasks ?? [];
+    if (scheduledSlugs.size === 0) return all;
+    return all.filter((t) => {
+      const slug = decodeTaskSlug(t.id);
+      return !slug || !scheduledSlugs.has(slug);
+    });
+  }, [tasksData, scheduledSlugs]);
+  const overdueCount = railTasks.filter((t) => t.due < dateStr).length;
 
-  // ---- next-workday pre-read (only fetched once today's calendar is clear,
-  // so the extra poll doesn't run all day; empty weekdays count as clear) ----
-  const dayClear = !!data && data.connected !== false && (allDone || timed.length === 0);
+  // ---- next-workday pre-read (only fetched once today's meetings are clear,
+  // so the extra poll doesn't run all day; a meeting-free day counts as clear) ----
+  const dayClear =
+    !!data && data.connected !== false && (allMeetingsDone || meetings.length === 0);
   const tomorrowISO = useMemo(() => {
     const d = new Date(dayStartISO);
     d.setDate(d.getDate() + 1); // setDate keeps local midnight across DST
@@ -182,14 +260,14 @@ export default function MyDayScreen({
   const { data: weekData } = useSWR<Resp>(
     dayClear ? myWeekKey(tomorrowISO) : null,
     fetcher,
-    { refreshInterval: 300_000, revalidateOnFocus: false }
+    { refreshInterval: 300_000, revalidateOnFocus: false },
   );
   const preview = useMemo(
     () =>
       weekData?.events
         ? pickPreviewDay(weekData.events, new Date(tomorrowISO))
         : null,
-    [weekData, tomorrowISO]
+    [weekData, tomorrowISO],
   );
 
   const dateLabel = new Date(nowMs).toLocaleDateString([], {
@@ -198,51 +276,73 @@ export default function MyDayScreen({
     day: "numeric",
   });
 
-  return (
-    <div className="flex min-h-0 flex-1 gap-[0.7em]">
-      {/* ---- main panel: timeline + agenda ---- */}
-      <Panel
-        className="wallboard-fade-up wb-vt wb-vt-main flex-[2.4] [animation-delay:80ms]"
-        title={
-          <>
-            My Day — {dateLabel}
-            {allDay.map((e) => (
-              <span
-                key={e.id}
-                className="flex items-center gap-[0.35em] rounded-full border border-white/10 bg-white/[0.05] px-[0.65em] py-[0.12em] font-medium normal-case tracking-normal text-foreground/75"
-              >
-                <CalendarDays className="h-[1em] w-[1em] shrink-0 text-muted-foreground" />
-                {e.summary}
-              </span>
-            ))}
-          </>
-        }
-        titleRight={
-          timed.length > 0 ? (
-            <span className="ml-auto flex items-center gap-[0.45em] font-medium normal-case tracking-normal">
-              <DoneRing done={doneCount} total={timed.length} />
-              <span className={allDone ? "text-green-400" : "text-muted-foreground/80"}>
-                {doneCount} of {timed.length} done
-              </span>
-            </span>
-          ) : undefined
-        }
-      >
-        {!data ? (
-          <Centered>Loading…</Centered>
-        ) : data.connected === false ? (
-          <Centered muted>Google Calendar not connected</Centered>
-        ) : timed.length === 0 ? (
-          <div className="md-fade-up flex flex-1 flex-col items-center justify-center gap-[0.6em] text-green-400">
-            <Sunrise className="h-[2.6em] w-[2.6em] opacity-70" />
-            <span className="text-[0.85em] font-medium">
-              No meetings today — clear runway
-            </span>
-          </div>
-        ) : (
-          <>
-            <FlightPath events={timed} dayStartMs={dayStartMs} nowMs={nowMs} />
+  const connected = !!data && data.connected !== false;
 
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-[0.7em]">
+      {/* ---- hero: the day as one band ---- */}
+      {connected && timed.length > 0 && (
+        <HeroTimeline events={timed} dayStartMs={dayStartMs} nowMs={nowMs} />
+      )}
+
+      <div className="flex min-h-0 flex-1 gap-[0.7em]">
+        {/* ---- agenda ---- */}
+        <Panel
+          className="wallboard-fade-up wb-vt wb-vt-main flex-[2.4] [animation-delay:80ms]"
+          title={
+            <>
+              My Day — {dateLabel}
+              {allDay.map((e) => {
+                const meta = KIND_META[classifyKind(e)];
+                return (
+                  <span
+                    key={e.id}
+                    className="flex items-center gap-[0.35em] rounded-full border px-[0.65em] py-[0.12em] font-medium normal-case tracking-normal"
+                    style={{
+                      borderColor: `${meta.color}44`,
+                      background: `${meta.color}14`,
+                      color: meta.color,
+                    }}
+                  >
+                    <meta.Icon className="h-[1em] w-[1em] shrink-0" />
+                    {e.summary}
+                  </span>
+                );
+              })}
+            </>
+          }
+          titleRight={
+            meetings.length > 0 ? (
+              <span className="ml-auto flex items-center gap-[0.45em] font-medium normal-case tracking-normal">
+                <DoneRing done={meetingsDone} total={meetings.length} />
+                <span
+                  className={
+                    allMeetingsDone ? "text-green-400" : "text-muted-foreground/80"
+                  }
+                >
+                  {meetingsDone} of {meetings.length} meetings
+                </span>
+              </span>
+            ) : tasksToday.length > 0 ? (
+              <span className="ml-auto flex items-center gap-[0.4em] font-medium normal-case tracking-normal text-muted-foreground/80">
+                <ListTodo className="h-[1.1em] w-[1.1em]" style={{ color: DONE_GREEN }} />
+                {tasksDone} of {tasksToday.length} tasks done
+              </span>
+            ) : undefined
+          }
+        >
+          {!data ? (
+            <Centered>Loading…</Centered>
+          ) : data.connected === false ? (
+            <Centered muted>Google Calendar not connected</Centered>
+          ) : timed.length === 0 ? (
+            <div className="md-fade-up flex flex-1 flex-col items-center justify-center gap-[0.6em] text-green-400">
+              <Sunrise className="h-[2.6em] w-[2.6em] opacity-70" />
+              <span className="text-[0.85em] font-medium">
+                Nothing scheduled today — clear runway
+              </span>
+            </div>
+          ) : (
             <div className="wallboard-noscrollbar flex min-h-0 flex-1 flex-col gap-[0.45em] overflow-y-auto pr-[0.2em]">
               {/* rows wrapper hugs content so the spine ends at the last
                   node instead of running to the panel bottom */}
@@ -264,59 +364,97 @@ export default function MyDayScreen({
                 ))}
                 {nowMarkerIdx === timed.length && <NowMarker nowMs={nowMs} />}
               </div>
-              {allDone && (
+              {allMeetingsDone && (
                 <div className="md-fade-up md-sheen mt-[0.3em] flex shrink-0 items-center justify-center gap-[0.5em] rounded-lg border border-green-500/40 bg-green-500/10 px-[0.9em] py-[0.6em] text-[0.8em] font-semibold text-green-300 [animation-delay:450ms]">
                   <CalendarCheck className="h-[1.1em] w-[1.1em] shrink-0" />
-                  All meetings for the day complete
+                  {tasksMissed > 0
+                    ? `All meetings done · ${tasksMissed} task${tasksMissed === 1 ? "" : "s"} still open`
+                    : "All meetings for the day complete"}
                 </div>
               )}
             </div>
-          </>
-        )}
-      </Panel>
+          )}
+        </Panel>
 
-      {/* ---- rail: stats · tomorrow · tasks ---- */}
-      <div className="flex min-w-0 flex-1 flex-col gap-[0.7em]">
-        <div className="grid shrink-0 grid-cols-3 gap-[0.55em]">
-          <RailTile
-            icon={Clock}
-            color={ACCENT}
-            label="In meetings"
-            value={meetingMs > 0 ? fmtSpan(meetingMs) : "—"}
-            countMinutes={Math.round(meetingMs / 60_000)}
-            delay={160}
-            className="wb-vt wb-vt-kpi-0"
-          />
-          <RailTile
-            icon={CalendarCheck}
-            color={DONE_GREEN}
-            label="Clear from"
-            value={clearFrom}
-            valueClass={clearNow ? "text-green-400" : undefined}
-            delay={230}
-            className="wb-vt wb-vt-kpi-1"
-          />
-          <RailTile
-            icon={ListTodo}
-            color={overdueCount > 0 ? AMBER : ACCENT}
-            label="Tasks due"
-            value={tasksData ? String(tasks.length) : "—"}
-            countTo={tasksData ? tasks.length : undefined}
-            valueClass={overdueCount > 0 ? "text-amber-400" : undefined}
-            delay={300}
-            className="wb-vt wb-vt-kpi-2"
+        {/* ---- rail: KPIs · tomorrow · to-dos ---- */}
+        <div className="flex min-w-0 flex-1 flex-col gap-[0.7em]">
+          <div className="grid shrink-0 grid-cols-2 gap-[0.55em]">
+            <KpiTile
+              icon={Users}
+              color={ACCENT}
+              label="In meetings"
+              value={meetingMs > 0 ? fmtSpan(meetingMs) : "—"}
+              countMinutes={Math.round(meetingMs / 60_000)}
+              delay={160}
+              className="wb-vt wb-vt-kpi-0"
+            />
+            <KpiTile
+              icon={Focus}
+              color={FOCUS_PURPLE}
+              label="Focus time"
+              value={ownMs > 0 ? fmtSpan(ownMs) : "—"}
+              countMinutes={Math.round(ownMs / 60_000)}
+              delay={230}
+              className="wb-vt wb-vt-kpi-1"
+            />
+            <KpiTile
+              icon={CalendarCheck}
+              color={DONE_GREEN}
+              label="Free at"
+              value={clearFrom}
+              valueClass={clearNow ? "text-green-400" : undefined}
+              delay={300}
+              className="wb-vt wb-vt-kpi-2"
+            />
+            {tasksToday.length > 0 ? (
+              <KpiTile
+                icon={tasksMissed > 0 ? Square : SquareCheckBig}
+                color={
+                  tasksMissed > 0
+                    ? AMBER
+                    : tasksDone === tasksToday.length
+                      ? DONE_GREEN
+                      : ACCENT
+                }
+                label="Tasks done"
+                value={`${tasksDone}/${tasksToday.length}`}
+                valueClass={
+                  tasksMissed > 0
+                    ? "text-amber-400"
+                    : tasksDone === tasksToday.length
+                      ? "text-green-400"
+                      : undefined
+                }
+                delay={370}
+              />
+            ) : (
+              <KpiTile
+                icon={ListTodo}
+                color={overdueCount > 0 ? AMBER : ACCENT}
+                label="To-dos due"
+                value={tasksData ? String(railTasks.length) : "—"}
+                countTo={tasksData ? railTasks.length : undefined}
+                valueClass={overdueCount > 0 ? "text-amber-400" : undefined}
+                delay={370}
+              />
+            )}
+          </div>
+
+          {dayClear && preview && (
+            <TomorrowPanel
+              preview={preview}
+              tomorrowMs={new Date(tomorrowISO).getTime()}
+            />
+          )}
+
+          <TasksPanel
+            tasksData={tasksData}
+            tasks={railTasks}
+            dateStr={dateStr}
+            overdueCount={overdueCount}
+            scheduledCount={scheduledSlugs.size}
           />
         </div>
-
-        {dayClear && preview && (
-          <TomorrowPanel preview={preview} tomorrowMs={new Date(tomorrowISO).getTime()} />
-        )}
-
-        <TasksPanel
-          tasksData={tasksData}
-          dateStr={dateStr}
-          overdueCount={overdueCount}
-        />
       </div>
 
       {/* dangerouslySetInnerHTML: SSR escapes apostrophes/quotes in <style>
@@ -325,7 +463,8 @@ export default function MyDayScreen({
         dangerouslySetInnerHTML={{
           __html: `
         /* From-only keyframes + backwards fill, same curves as the page's
-           wallboard-* and Team screen's ts-* sets. */
+           wallboard-* and Team screen's ts-* sets. Continuous animation is
+           rationed: md-breathe appears exactly once (hero now-dot). */
         .md-fade-up {
           animation: md-fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) backwards;
         }
@@ -346,23 +485,15 @@ export default function MyDayScreen({
         @keyframes md-draw-y {
           from { transform: scaleY(0); }
         }
-        /* Overshoot pop for checkmarks + timeline capsules. */
+        /* Overshoot pop for checkmarks + timeline blocks. */
         .md-pop {
           animation: md-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
         }
         @keyframes md-pop {
           from { opacity: 0; transform: scale(0.2); }
         }
-        /* Expanding ring on the in-progress node. */
-        .md-ring {
-          animation: md-ring 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
-        }
-        @keyframes md-ring {
-          0% { transform: scale(1); opacity: 0.7; }
-          70%, 100% { transform: scale(2); opacity: 0; }
-        }
         .md-breathe {
-          animation: md-breathe 2.2s ease-in-out infinite;
+          animation: md-breathe 2.6s ease-in-out infinite;
         }
         @keyframes md-breathe {
           0%, 100% { opacity: 0.55; }
@@ -381,14 +512,6 @@ export default function MyDayScreen({
         }
         @keyframes md-sheen {
           to { transform: skewX(-20deg) translateX(340%); }
-        }
-        /* Glow pulse on the in-progress timeline capsule. */
-        .md-live {
-          animation: md-live 1.8s ease-in-out infinite;
-        }
-        @keyframes md-live {
-          0%, 100% { box-shadow: 0 0 0 1px rgba(68,147,248,0.45), 0 0 8px rgba(68,147,248,0.35); }
-          50% { box-shadow: 0 0 0 2px rgba(68,147,248,0.85), 0 0 18px rgba(68,147,248,0.7); }
         }
       `,
         }}
@@ -416,7 +539,7 @@ function Panel({
     <section
       className={cn(
         "flex min-w-0 flex-col overflow-hidden rounded-xl border bg-muted/20 p-[0.7em]",
-        className
+        className,
       )}
     >
       <h2 className="mb-[0.55em] flex shrink-0 items-center gap-[0.4em] text-[0.62em] font-semibold uppercase tracking-widest text-muted-foreground">
@@ -434,45 +557,59 @@ function Panel({
   );
 }
 
-/* ================= day timeline ================= */
+/* ================= hero timeline ================= */
 
 /** Legend square, same shape language as the Team screen's LegendDot. */
-function LegendDot({
-  color,
-  outline,
-  label,
-}: {
-  color?: string;
-  outline?: boolean;
-  label: string;
-}) {
+function LegendDot({ color, label }: { color: string; label: string }) {
   return (
     <span className="flex items-center gap-[0.3em]">
-      <span
-        className="h-[0.55em] w-[0.55em] rounded-[2px]"
-        style={
-          outline
-            ? { boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.45)" }
-            : { background: color }
-        }
-      />
+      <span className="h-[0.55em] w-[0.55em] rounded-[2px]" style={{ background: color }} />
       {label}
     </span>
   );
 }
 
+/** Fill + text colour for a hero block: hue by kind, brightness by status;
+ *  tasks encode their own state (green done, amber missed, outlined open). */
+function blockStyle(e: AgendaEvent): {
+  css: React.CSSProperties;
+  text: string;
+} {
+  const white = "rgba(255,255,255,0.93)";
+  if (e.kind === "task") {
+    const s = taskState(e);
+    if (s === "done")
+      return { css: { background: `${DONE_GREEN}d0` }, text: white };
+    if (s === "missed")
+      return { css: { background: AMBER }, text: "rgba(20,14,0,0.85)" };
+    return {
+      css: {
+        background: `${DONE_GREEN}14`,
+        boxShadow: `inset 0 0 0 1.5px ${DONE_GREEN}`,
+      },
+      text: DONE_GREEN,
+    };
+  }
+  const color = KIND_META[e.kind].color;
+  if (e.status === "past")
+    return { css: { background: color, opacity: 0.32 }, text: white };
+  if (e.status === "now")
+    return {
+      css: { background: color, boxShadow: `0 0 14px ${color}88` },
+      text: white,
+    };
+  return { css: { background: `${color}e6` }, text: white };
+}
+
 /**
- * The workday as one horizontal groove: from min(first meeting, 9am) to
- * max(last meeting, 5pm), snapped to whole hours. Meeting capsules sit flush
- * inside the groove (double-bookings split into two thin lanes), elapsed
- * time is shaded, upcoming free gaps big enough to matter get an explicit
- * "1h 20m free" label, and a breathing red cursor rides at "now" above an
- * hour ruler. The eyebrow carries a legend so the encoding reads at a glance.
- *
- * Positioned children keep the parent font size (em offsets on a
- * text-[0.5em] element shrink with it); tiny type lives on inner spans only.
+ * The day as one full-width band: from min(first item, 9am) to max(last item,
+ * 5pm), snapped to whole hours. Blocks are tall enough to carry their own
+ * titles (narrow ones fall back to a bare glyph), coloured by kind, dimming
+ * once past; overlaps split into two lanes; upcoming free gaps big enough to
+ * matter are labelled; a red cursor rides at "now" over an hour ruler. The
+ * eyebrow carries a kind legend so the encoding reads at a glance.
  */
-function FlightPath({
+function HeroTimeline({
   events,
   dayStartMs,
   nowMs,
@@ -494,8 +631,8 @@ function FlightPath({
   const hours: number[] = [];
   for (let t = start; t <= end; t += hourStep) hours.push(t);
 
-  // Two-lane layout for double-bookings: an event that starts while the
-  // previous one is still running drops to a thin second lane.
+  // Two-lane layout for overlaps: an item that starts while the previous one
+  // is still running drops to a thin second lane.
   let l0End = -Infinity;
   const lanes = events.map((e) => {
     if (e.startMs >= l0End) {
@@ -521,35 +658,40 @@ function FlightPath({
     if (to <= nowMs || to - from < 45 * 60_000) continue;
     const leftPct = pct(from);
     const widthPct = pct(to) - leftPct;
-    if (widthPct < 8) continue;
+    if (widthPct < 6) continue;
     gaps.push({ leftPct, widthPct, label: `${fmtSpan(to - from)} free` });
   }
 
   const nowPct = pct(nowMs);
   const nowOnPath = nowMs >= start && nowMs <= end;
 
+  // Only legend the kinds actually present, so the eyebrow stays honest.
+  const present = new Set(events.map((e) => e.kind));
+  const legend = (Object.keys(KIND_META) as EventKind[])
+    .filter((k) => present.has(k))
+    .map((k) => ({ color: KIND_META[k].color, label: KIND_META[k].label }));
+
   return (
-    <div className="mb-[0.55em] shrink-0">
-      {/* eyebrow + legend, mirroring the Team screen's rhythm strip */}
-      <div className="mb-[0.4em] flex items-center text-[0.5em] font-semibold uppercase tracking-widest text-muted-foreground/70">
+    <section className="wallboard-fade-up shrink-0 rounded-xl border bg-muted/20 px-[0.7em] pb-[0.45em] pt-[0.55em]">
+      <div className="mb-[0.45em] flex items-center text-[0.55em] font-semibold uppercase tracking-widest text-muted-foreground">
         Day timeline
         <span className="ml-auto flex items-center gap-[1em] font-medium normal-case tracking-normal text-muted-foreground/80">
-          <LegendDot color={DONE_GREEN} label="Done" />
-          <LegendDot color={ACCENT} label="In progress" />
-          <LegendDot outline label="Ahead" />
-          <span className="text-muted-foreground/60">empty = free time</span>
+          {legend.map((l) => (
+            <LegendDot key={l.label} color={l.color} label={l.label} />
+          ))}
+          <span className="text-muted-foreground/60">empty = free</span>
         </span>
       </div>
 
-      <div className="relative mx-[0.5em] h-[2.75em]">
+      <div className="relative mx-[0.3em] h-[4.35em]">
         {/* groove — the day itself; empty stretches are free time */}
         <div
-          className="md-grow-x absolute left-0 right-0 top-[0.5em] h-[1em] overflow-hidden rounded-full bg-white/[0.045] shadow-[inset_0_1px_3px_rgba(0,0,0,0.45)]"
+          className="md-grow-x absolute left-0 right-0 top-0 h-[2.7em] overflow-hidden rounded-lg bg-white/[0.04] shadow-[inset_0_1px_3px_rgba(0,0,0,0.4)]"
           style={{ animationDelay: "100ms" }}
         >
           {/* elapsed shading — time already flown */}
           <div
-            className="absolute inset-y-0 left-0 bg-white/[0.04]"
+            className="absolute inset-y-0 left-0 bg-white/[0.035]"
             style={{ width: `${nowPct.toFixed(2)}%` }}
           />
         </div>
@@ -557,47 +699,55 @@ function FlightPath({
         {gaps.map((g) => (
           <div
             key={g.leftPct}
-            className="md-fade-up absolute top-[0.5em] flex h-[1em] items-center justify-center overflow-hidden"
+            className="md-fade-up absolute top-0 flex h-[2.7em] items-center justify-center overflow-hidden"
             style={{
               left: `${g.leftPct.toFixed(2)}%`,
               width: `${g.widthPct.toFixed(2)}%`,
               animationDelay: "950ms",
             }}
           >
-            <span className="whitespace-nowrap text-[0.52em] font-medium tracking-wide text-muted-foreground/75">
+            <span className="whitespace-nowrap text-[0.55em] font-medium tracking-wide text-muted-foreground/70">
               {g.label}
             </span>
           </div>
         ))}
-        {/* meeting capsules, flush inside the groove */}
+        {/* blocks — labelled when there's room, bare glyph when not */}
         {events.map((e, i) => {
           const left = pct(e.startMs);
           const width = Math.max(0.7, pct(e.endMs) - left);
           const lane = lanes[i];
+          const meta = KIND_META[e.kind];
+          const { css, text } = blockStyle(e);
+          const showLabel = width >= 7 && (!twoLanes || lane === 0 || width >= 10);
+          const showIcon = width >= 2.4;
           return (
             <span
               key={e.id}
-              title={`${e.summary} · ${fmtTime(e.startISO)}`}
-              className={cn(
-                "md-pop absolute rounded-full",
-                e.status === "now" && "md-live"
-              )}
+              title={`${meta.label} · ${e.summary} · ${fmtTime(e.startISO)}–${fmtTime(e.endISO)}`}
+              className="md-pop absolute flex items-center overflow-hidden rounded-md px-[0.4em]"
               style={{
                 left: `${left.toFixed(2)}%`,
                 width: `${width.toFixed(2)}%`,
-                top: !twoLanes ? "0.5em" : lane === 0 ? "0.52em" : "1.04em",
-                height: !twoLanes ? "1em" : "0.44em",
-                animationDelay: `${320 + i * 55}ms`,
-                ...(e.status === "past"
-                  ? { background: DONE_GREEN, opacity: 0.8 }
-                  : e.status === "now"
-                    ? { background: ACCENT }
-                    : {
-                        background: "rgba(255,255,255,0.1)",
-                        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.4)",
-                      }),
+                top: !twoLanes ? "0.28em" : lane === 0 ? "0.28em" : "1.5em",
+                height: !twoLanes ? "2.14em" : "1.06em",
+                animationDelay: `${300 + i * 50}ms`,
+                ...css,
               }}
-            />
+            >
+              {showIcon && (
+                <span
+                  className="flex min-w-0 items-center gap-[0.35em]"
+                  style={{ color: text }}
+                >
+                  <meta.Icon className="h-[0.72em] w-[0.72em] shrink-0" />
+                  {showLabel && (
+                    <span className="truncate text-[0.58em] font-semibold leading-none">
+                      {e.summary}
+                    </span>
+                  )}
+                </span>
+              )}
+            </span>
           );
         })}
         {/* hour ruler under the groove */}
@@ -607,20 +757,20 @@ function FlightPath({
             className="md-fade-up absolute -translate-x-1/2"
             style={{
               left: `${pct(t).toFixed(2)}%`,
-              top: "1.62em",
+              top: "2.95em",
               animationDelay: `${250 + i * 25}ms`,
             }}
           >
-            <span className="mx-auto block h-[0.24em] w-px bg-white/15" />
-            <span className="block text-center text-[0.5em] tabular-nums leading-[1.6] text-muted-foreground/60">
+            <span className="mx-auto block h-[0.26em] w-px bg-white/15" />
+            <span className="block text-center text-[0.52em] tabular-nums leading-[1.6] text-muted-foreground/60">
               {fmtHour(t)}
             </span>
           </div>
         ))}
-        {/* now cursor */}
+        {/* now cursor — home of the screen's single continuous pulse */}
         {nowOnPath && (
           <span
-            className="md-fade-up absolute top-[0.12em] z-10 h-[1.75em] w-[2px] -translate-x-1/2 rounded"
+            className="md-fade-up absolute top-[-0.28em] z-10 h-[3.3em] w-[2px] -translate-x-1/2 rounded"
             style={{
               left: `${nowPct.toFixed(2)}%`,
               background: NOW_RED,
@@ -629,17 +779,85 @@ function FlightPath({
             }}
           >
             <span
-              className="md-breathe absolute left-1/2 top-0 h-[0.42em] w-[0.42em] -translate-x-1/2 -translate-y-1/2 rounded-full"
+              className="md-breathe absolute left-1/2 top-0 h-[0.46em] w-[0.46em] -translate-x-1/2 -translate-y-1/2 rounded-full"
               style={{ background: NOW_RED, boxShadow: `0 0 8px ${NOW_RED}` }}
             />
           </span>
         )}
       </div>
-    </div>
+    </section>
   );
 }
 
 /* ================= agenda ================= */
+
+/** Spine node: a kind-coloured disc. Meetings/focus/blocks dim as they pass
+ *  and hold a steady glow while live; tasks show their completion (green
+ *  check / open box / amber missed) regardless of the clock. */
+function SpineNode({ e }: { e: AgendaEvent }) {
+  const ring = "ring-4 ring-background";
+  const base = "flex h-[1.4em] w-[1.4em] items-center justify-center rounded-full";
+
+  if (e.kind === "task") {
+    const s = taskState(e);
+    if (s === "done") {
+      return (
+        <span
+          className={cn("md-pop", base, ring)}
+          style={{
+            background: `${DONE_GREEN}2e`,
+            boxShadow: `inset 0 0 0 1.5px ${DONE_GREEN}`,
+          }}
+        >
+          <Check className="h-[0.85em] w-[0.85em]" style={{ color: DONE_GREEN }} />
+        </span>
+      );
+    }
+    const c = s === "missed" ? AMBER : ACCENT;
+    return (
+      <span className={cn(base, ring)} style={{ boxShadow: `inset 0 0 0 1.5px ${c}` }}>
+        <Square className="h-[0.8em] w-[0.8em]" style={{ color: c }} />
+      </span>
+    );
+  }
+
+  const { color, Icon } = KIND_META[e.kind];
+  if (e.status === "now") {
+    return (
+      <span
+        className={cn(base, ring)}
+        style={{ background: color, boxShadow: `0 0 12px ${color}aa` }}
+      >
+        <Icon className="h-[0.8em] w-[0.8em] text-white" />
+      </span>
+    );
+  }
+  const dim = e.status === "past";
+  return (
+    <span
+      className={cn("md-pop", base, ring, dim && "opacity-55")}
+      style={{
+        background: `${color}26`,
+        boxShadow: `inset 0 0 0 1.5px ${color}${dim ? "66" : ""}`,
+      }}
+    >
+      <Icon className="h-[0.8em] w-[0.8em]" style={{ color }} />
+    </span>
+  );
+}
+
+/** Small kind pill next to the title. */
+function KindChip({ label, color, Icon }: { label: string; color: string; Icon: IconCmp }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-[0.3em] rounded-[0.4em] px-[0.45em] py-[0.1em] text-[0.5em] font-semibold uppercase tracking-wider"
+      style={{ background: `${color}1f`, color }}
+    >
+      <Icon className="h-[1.15em] w-[1.15em]" />
+      {label}
+    </span>
+  );
+}
 
 function AgendaRow({
   e,
@@ -653,10 +871,30 @@ function AgendaRow({
   delay: number;
 }) {
   const st = e.status;
+  const done = isDone(e);
   const elapsedPct =
     st === "now"
       ? Math.min(100, ((nowMs - e.startMs) / (e.endMs - e.startMs)) * 100)
       : 0;
+
+  const meta = KIND_META[e.kind];
+  const ts = e.kind === "task" ? taskState(e) : null;
+  const chipColor = ts === "missed" ? AMBER : ts === "done" ? DONE_GREEN : meta.color;
+
+  // Sub-line: meeting size and/or location. (No 1:1 guess — group aliases
+  // surface as a single attendee, so a count is the honest signal.)
+  const subParts: React.ReactNode[] = [];
+  if (e.kind === "meeting" && (e.attendeeCount ?? 0) > 1) {
+    subParts.push(`${e.attendeeCount} people`);
+  }
+  if (e.location) {
+    subParts.push(
+      <span key="loc" className="flex items-center gap-[0.25em]">
+        <MapPin className="h-[1em] w-[1em] shrink-0" />
+        <span className="truncate">{e.location}</span>
+      </span>,
+    );
+  }
 
   return (
     <div
@@ -665,43 +903,23 @@ function AgendaRow({
     >
       {/* spine node */}
       <div className="relative z-10 flex items-center justify-center">
-        {st === "past" ? (
-          <span
-            className="md-pop flex h-[1.1em] w-[1.1em] items-center justify-center rounded-full ring-4 ring-background"
-            style={{
-              background: "rgba(63,185,80,0.18)",
-              boxShadow: `inset 0 0 0 1.5px ${DONE_GREEN}`,
-              animationDelay: `${delay + 220}ms`,
-            }}
-          >
-            <Check className="h-[0.7em] w-[0.7em]" style={{ color: DONE_GREEN }} />
-          </span>
-        ) : st === "now" ? (
-          <span className="relative flex h-[1.1em] w-[1.1em] items-center justify-center">
-            <span
-              className="md-ring absolute inset-0 rounded-full"
-              style={{ boxShadow: `0 0 0 2px ${ACCENT}` }}
-            />
-            <span
-              className="h-[0.85em] w-[0.85em] rounded-full ring-4 ring-background"
-              style={{ background: ACCENT, boxShadow: `0 0 10px ${ACCENT}` }}
-            />
-          </span>
-        ) : (
-          <span className="h-[0.6em] w-[0.6em] rounded-full bg-background ring-4 ring-background"
-            style={{ boxShadow: `inset 0 0 0 1.5px rgba(255,255,255,0.3)` }}
-          />
-        )}
+        <SpineNode e={e} />
       </div>
 
-      {/* card */}
+      {/* card — the live one holds a steady glow (no pulse) */}
       <div
         className={cn(
           "relative flex items-center gap-[0.8em] overflow-hidden rounded-lg border bg-muted/20 px-[0.85em] py-[0.5em]",
-          st === "past" && "opacity-45",
-          st === "now" && "wallboard-glow"
+          done && "opacity-45",
         )}
-        style={st === "now" ? { borderColor: "rgba(68,147,248,0.5)" } : undefined}
+        style={
+          st === "now"
+            ? {
+                borderColor: `${meta.color}80`,
+                boxShadow: `0 0 0 1px ${meta.color}55, 0 0 16px ${meta.color}44`,
+              }
+            : undefined
+        }
       >
         <div className="w-[6.2em] shrink-0 text-right leading-tight">
           <div className="text-[0.78em] font-semibold tabular-nums">
@@ -712,32 +930,47 @@ function AgendaRow({
           </div>
         </div>
         <div className="min-w-0 flex-1 leading-snug">
-          <div
-            className={cn(
-              "truncate text-[0.82em] font-semibold",
-              e.response === "tentative" && "italic text-foreground/75"
-            )}
-          >
-            {e.summary}
+          <div className="flex items-center gap-[0.5em]">
+            <KindChip label={meta.label} color={chipColor} Icon={meta.Icon} />
+            <span
+              className={cn(
+                "truncate text-[0.82em] font-semibold",
+                ts === "done" && "text-muted-foreground line-through",
+                e.response === "tentative" && "italic text-foreground/75",
+              )}
+            >
+              {e.summary}
+            </span>
             {e.response === "tentative" && (
-              <span className="ml-[0.5em] text-[0.75em] font-normal text-muted-foreground">
+              <span className="shrink-0 text-[0.6em] font-normal text-muted-foreground">
                 maybe
               </span>
             )}
           </div>
-          {e.location && (
-            <div className="flex items-center gap-[0.3em] truncate text-[0.6em] text-muted-foreground">
-              <MapPin className="h-[1em] w-[1em] shrink-0" />
-              <span className="truncate">{e.location}</span>
+          {subParts.length > 0 && (
+            <div className="mt-[0.15em] flex items-center gap-[0.55em] truncate text-[0.6em] text-muted-foreground">
+              {subParts.map((p, i) => (
+                <span key={i} className="flex items-center gap-[0.25em] truncate">
+                  {p}
+                </span>
+              ))}
             </div>
           )}
         </div>
+
+        {/* right-edge status */}
         {st === "now" ? (
           <span
             className="shrink-0 rounded-full px-[0.6em] py-[0.15em] text-[0.62em] font-semibold"
-            style={{ background: "rgba(68,147,248,0.15)", color: ACCENT }}
+            style={{ background: `${meta.color}26`, color: meta.color }}
           >
             Now · ends in {fmtSpan(e.endMs - nowMs)}
+          </span>
+        ) : ts === "done" ? (
+          <span className="shrink-0 text-[0.62em] font-semibold text-green-400">Done</span>
+        ) : ts === "missed" ? (
+          <span className="shrink-0 rounded-full bg-amber-400/10 px-[0.55em] py-[0.12em] text-[0.58em] font-semibold text-amber-400">
+            Left open
           </span>
         ) : isNext ? (
           <span className="shrink-0 text-[0.62em] font-medium tabular-nums text-muted-foreground">
@@ -753,8 +986,8 @@ function AgendaRow({
               className="absolute bottom-0 left-0 h-[3px] rounded-r-full transition-[width] duration-1000 ease-linear"
               style={{
                 width: `${elapsedPct.toFixed(2)}%`,
-                background: ACCENT,
-                boxShadow: `0 0 8px ${ACCENT}`,
+                background: meta.color,
+                boxShadow: `0 0 8px ${meta.color}`,
               }}
             />
           </>
@@ -770,7 +1003,7 @@ function NowMarker({ nowMs }: { nowMs: number }) {
     <div className="md-fade-up grid shrink-0 grid-cols-[1.9em_minmax(0,1fr)] items-center py-[0.05em]">
       <div className="relative z-10 flex items-center justify-center">
         <span
-          className="md-breathe h-[0.5em] w-[0.5em] rounded-full ring-4 ring-background"
+          className="h-[0.5em] w-[0.5em] rounded-full ring-4 ring-background"
           style={{ background: NOW_RED, boxShadow: `0 0 8px ${NOW_RED}` }}
         />
       </div>
@@ -820,8 +1053,9 @@ function DoneRing({ done, total }: { done: number; total: number }) {
   );
 }
 
-/** Icon-chip stat tile, same anatomy as the Team screen's KpiTile. */
-function RailTile({
+/** Big glanceable stat tile — 2×2 in the rail, roomier than the Team screen's
+ *  KpiTile so the numbers carry from across the room. */
+function KpiTile({
   icon: Icon,
   color,
   label,
@@ -854,27 +1088,27 @@ function RailTile({
   return (
     <div
       className={cn(
-        "md-fade-up flex items-center gap-[0.5em] rounded-xl border bg-white/[0.03] px-[0.55em] py-[0.5em]",
-        className
+        "md-fade-up flex items-center gap-[0.6em] rounded-xl border bg-white/[0.03] px-[0.7em] py-[0.65em]",
+        className,
       )}
       style={{ animationDelay: `${delay}ms` }}
     >
       <span
-        className="flex h-[1.8em] w-[1.8em] shrink-0 items-center justify-center rounded-lg"
+        className="flex h-[2.1em] w-[2.1em] shrink-0 items-center justify-center rounded-lg"
         style={{ background: `${color}1f`, color }}
       >
-        <Icon className="h-[1em] w-[1em]" />
+        <Icon className="h-[1.15em] w-[1.15em]" />
       </span>
       <div className="min-w-0">
         <div
           className={cn(
-            "truncate text-[1.05em] font-bold leading-none tabular-nums",
-            valueClass
+            "truncate text-[1.3em] font-bold leading-none tabular-nums",
+            valueClass,
           )}
         >
           {shown}
         </div>
-        <div className="mt-[0.35em] truncate text-[0.46em] font-semibold uppercase tracking-widest text-muted-foreground">
+        <div className="mt-[0.4em] truncate text-[0.52em] font-semibold uppercase tracking-widest text-muted-foreground">
           {label}
         </div>
       </div>
@@ -910,30 +1144,37 @@ function TomorrowPanel({
       }
       titleRight={
         <span className="ml-auto font-medium normal-case tracking-normal text-muted-foreground/80">
-          {preview.events.length} meeting{preview.events.length === 1 ? "" : "s"}
+          {preview.events.length} item{preview.events.length === 1 ? "" : "s"}
         </span>
       }
     >
       <div className="flex flex-col gap-[0.35em]">
-        {shown.map((e, i) => (
-          <div
-            key={e.id}
-            className="md-fade-up flex items-center gap-[0.6em] rounded-md bg-white/[0.025] px-[0.6em] py-[0.35em]"
-            style={{ animationDelay: `${460 + i * 55}ms` }}
-          >
-            <span className="w-[4.6em] shrink-0 text-right text-[0.66em] font-semibold tabular-nums text-foreground/85">
-              {fmtTime(e.startISO)}
-            </span>
-            <span
-              className={cn(
-                "min-w-0 truncate text-[0.66em] text-foreground/75",
-                e.response === "tentative" && "italic text-foreground/55"
-              )}
+        {shown.map((e, i) => {
+          const meta = KIND_META[classifyKind(e)];
+          return (
+            <div
+              key={e.id}
+              className="md-fade-up flex items-center gap-[0.55em] rounded-md bg-white/[0.025] px-[0.6em] py-[0.35em]"
+              style={{ animationDelay: `${460 + i * 55}ms` }}
             >
-              {e.summary}
-            </span>
-          </div>
-        ))}
+              <span className="w-[4.6em] shrink-0 text-right text-[0.66em] font-semibold tabular-nums text-foreground/85">
+                {fmtTime(e.startISO)}
+              </span>
+              <meta.Icon
+                className="h-[0.72em] w-[0.72em] shrink-0"
+                style={{ color: meta.color }}
+              />
+              <span
+                className={cn(
+                  "min-w-0 truncate text-[0.66em] text-foreground/75",
+                  e.response === "tentative" && "italic text-foreground/55",
+                )}
+              >
+                {e.summary}
+              </span>
+            </div>
+          );
+        })}
         {overflow > 0 && (
           <span className="pl-[0.6em] text-[0.55em] text-muted-foreground/70">
             +{overflow} more
@@ -946,14 +1187,17 @@ function TomorrowPanel({
 
 function TasksPanel({
   tasksData,
+  tasks,
   dateStr,
   overdueCount,
+  scheduledCount,
 }: {
   tasksData?: TasksResp;
+  tasks: DueTask[];
   dateStr: string;
   overdueCount: number;
+  scheduledCount: number;
 }) {
-  const tasks = tasksData?.tasks ?? [];
   const shown = tasks.slice(0, TASKS_MAX_ROWS);
   const overflow = tasks.length - shown.length;
 
@@ -962,18 +1206,22 @@ function TasksPanel({
     Math.round(
       (new Date(`${dateStr}T00:00:00`).getTime() -
         new Date(`${due}T00:00:00`).getTime()) /
-        (24 * 60 * 60 * 1000)
+        (24 * 60 * 60 * 1000),
     );
 
   return (
     <Panel
       className="wallboard-fade-up wb-vt wb-vt-rail min-h-0 flex-1 [animation-delay:460ms]"
       dotColor={ACCENT}
-      title="Tasks due today"
+      title="To-dos due"
       titleRight={
         overdueCount > 0 ? (
           <span className="ml-auto font-semibold normal-case tracking-normal text-amber-400">
             {overdueCount} overdue
+          </span>
+        ) : scheduledCount > 0 ? (
+          <span className="ml-auto font-medium normal-case tracking-normal text-muted-foreground/70">
+            {scheduledCount} on calendar
           </span>
         ) : undefined
       }
@@ -987,7 +1235,9 @@ function TasksPanel({
       ) : tasks.length === 0 ? (
         <span className="flex items-center gap-[0.4em] text-[0.62em] text-green-400/90">
           <Check className="h-[1em] w-[1em]" />
-          Nothing due — task list clear
+          {scheduledCount > 0
+            ? "All due to-dos are on your calendar"
+            : "Nothing due — task list clear"}
         </span>
       ) : (
         <div className="wallboard-noscrollbar flex min-h-0 flex-col gap-[0.35em] overflow-y-auto">
@@ -1002,7 +1252,7 @@ function TasksPanel({
                 <CircleDashed
                   className={cn(
                     "h-[0.8em] w-[0.8em] shrink-0",
-                    days > 0 ? "text-amber-400/80" : "text-muted-foreground/60"
+                    days > 0 ? "text-amber-400/80" : "text-muted-foreground/60",
                   )}
                 />
                 <span className="min-w-0 flex-1 truncate text-[0.66em] text-foreground/85">
@@ -1044,7 +1294,7 @@ function Centered({
     <div
       className={cn(
         "flex flex-1 items-center justify-center text-[0.85em]",
-        muted && "text-muted-foreground/60"
+        muted && "text-muted-foreground/60",
       )}
     >
       {children}
