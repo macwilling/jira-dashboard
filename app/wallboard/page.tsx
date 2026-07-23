@@ -78,6 +78,17 @@ const fetcher = async (url: string) => {
   return res.json();
 };
 
+/**
+ * Shared response shape of the three Google wallboard endpoints
+ * (calendar/next, calendar/today, tasks/today). Each degrades quietly:
+ * `connected: false` when Google isn't wired up, `{ error }` (with a 500) on a
+ * real failure. Used to derive the aggregate "Google" footer status.
+ */
+interface GoogleStatusBody {
+  connected?: boolean;
+  error?: string;
+}
+
 interface GitHubActivityEvent {
   id: string;
   kind:
@@ -231,22 +242,37 @@ export default function WallboardPage() {
     revalidateOnFocus: false,
   });
   // Same idea for the My Day screen's tasks rail (its calendar key is already
-  // kept warm by MeetingCountdown below).
-  useSWR(tasksKey(localDateStr(dayStartDate)), (url: string) => fetch(url).then((r) => r.json()), {
-    refreshInterval: TASKS_REFRESH_MS,
-    revalidateOnFocus: false,
-  });
+  // kept warm by MeetingCountdown below). We also read its body for the footer
+  // StatusBar's aggregate "Google" health (see `sources` below) — raw fetcher,
+  // so a failed poll surfaces as `{ error }` in the body rather than a throw.
+  // We capture both the body `error` (raw fetcher, our own poll) and the SWR
+  // `error` (a shaped-fetcher owner on the same key throws on non-2xx — SWR
+  // shares that thrown error with every subscriber), so a failure is caught
+  // whichever fetcher happens to own the deduped request.
+  const { data: tasksStatus, error: tasksError } = useSWR<GoogleStatusBody>(
+    tasksKey(localDateStr(dayStartDate)),
+    (url: string) => fetch(url).then((r) => r.json()),
+    { refreshInterval: TASKS_REFRESH_MS, revalidateOnFocus: false }
+  );
+  // Status-only mirror of the My Day calendar poll (dedupes with
+  // MeetingCountdown / MyDayScreen — same key, no extra request). Covers both
+  // today's events and the next-workday pre-read, which share this endpoint.
+  const { data: calDayStatus, error: calDayError } = useSWR<GoogleStatusBody>(
+    myDayKey(dayStartISO),
+    (url: string) => fetch(url).then((r) => r.json()),
+    { refreshInterval: MY_DAY_REFRESH_MS, revalidateOnFocus: false }
+  );
 
-  // Status-only mirror of the calendar poll (dedupes with MeetingCountdown's
-  // hook — same key, so no extra request), surfaced here for the StatusBar.
-  const { data: cal, error: calError } = useSWR<{ connected?: boolean }>(
+  // Status-only mirror of the next-meeting poll (dedupes with
+  // MeetingCountdown's hook — same key, so no extra request), surfaced here for
+  // the StatusBar. The success *heartbeat* that stamps freshness lives on
+  // MeetingCountdown's hook (`onPoll`), because SWR only fires onSuccess for
+  // the hook that owns the deduped request and effect order makes that the
+  // child. This mirror just reads connected/error off the shared cache.
+  const { data: cal, error: calError } = useSWR<GoogleStatusBody>(
     "/api/google/calendar/next",
     fetcher,
-    {
-      refreshInterval: 60_000,
-      revalidateOnFocus: false,
-      onSuccess: () => stamp("calendar"),
-    }
+    { refreshInterval: 60_000, revalidateOnFocus: false }
   );
 
   // ---- team lookup ----
@@ -708,7 +734,20 @@ export default function WallboardPage() {
       make("Jira", "jira", configured === false, jiraError),
       make("GitHub", "github", gh?.configured === false, ghError),
       make("Datadog", "datadog", dd?.configured === false, ddError),
-      make("Calendar", "calendar", cal?.connected === false, calError),
+      // One pill for all three Google-backed polls (next meeting / day +
+      // next-workday events / tasks). Freshness is stamped by the 60s
+      // next-meeting heartbeat; the dot goes red if *any* of the three errors,
+      // and gray when Google isn't connected (they report that together).
+      make(
+        "Google",
+        "google",
+        cal?.connected === false,
+        calError ||
+          tasksError ||
+          calDayError ||
+          tasksStatus?.error ||
+          calDayStatus?.error
+      ),
       {
         label: "Vercel",
         state:
@@ -726,6 +765,10 @@ export default function WallboardPage() {
     ddError,
     cal,
     calError,
+    tasksStatus,
+    tasksError,
+    calDayStatus,
+    calDayError,
     versionOk,
   ]);
 
@@ -777,6 +820,7 @@ export default function WallboardPage() {
             nowMs={nowMs}
             dayStartISO={dayStartISO}
             soundOn={soundOn}
+            onPoll={() => stamp("google")}
             onStartingNow={(id, summary) =>
               setMeetingToast({ id, summary, at: Date.now() })
             }
@@ -1356,11 +1400,20 @@ function MeetingCountdown({
   nowMs,
   dayStartISO,
   soundOn,
+  onPoll,
   onStartingNow,
 }: {
   nowMs: number;
   dayStartISO: string;
   soundOn: boolean;
+  /**
+   * Fired on each successful calendar poll so the parent can stamp the footer
+   * StatusBar's Google heartbeat. Must live here rather than on the parent's
+   * status-mirror hook: both share this SWR key, and SWR only runs onSuccess
+   * for the hook that *starts* the (deduped) request — which, because effects
+   * fire child-first, is always this one.
+   */
+  onPoll: () => void;
   onStartingNow: (id: string, summary: string) => void;
 }) {
   const { data } = useSWR<{
@@ -1368,6 +1421,7 @@ function MeetingCountdown({
   }>("/api/google/calendar/next", fetcher, {
     refreshInterval: 60_000,
     revalidateOnFocus: false,
+    onSuccess: onPoll,
   });
   const realMeeting = data?.meeting ?? null;
 
