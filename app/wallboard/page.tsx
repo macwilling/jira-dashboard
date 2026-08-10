@@ -10,7 +10,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import useSWR from "swr";
-import { CalendarCheck, CalendarClock, Pause, Volume2, VolumeX } from "lucide-react";
+import { CalendarCheck, CalendarClock, Moon, Pause, Volume2, VolumeX } from "lucide-react";
 import { useTicketData } from "@/lib/ticket-data-context";
 import { cn } from "@/lib/utils";
 import {
@@ -50,6 +50,7 @@ import {
   playStartNow,
   unlockOnGesture,
 } from "./sound";
+import { NightScreen, useNightMode } from "./night";
 import { SourceIcon } from "./source-icons";
 import StatusBar, { SourceStatus } from "./StatusBar";
 import { stageOf } from "./stages";
@@ -192,14 +193,6 @@ export default function WallboardPage() {
     []
   );
 
-  // Same cache key as TicketDataProvider — this hook just drives a faster
-  // (60s) revalidation cadence while the wallboard is on screen.
-  const { error: jiraError } = useSWR("/api/jira/tickets", fetcher, {
-    refreshInterval: TICKETS_REFRESH_MS,
-    revalidateOnFocus: false,
-    onSuccess: () => stamp("jira"),
-  });
-
   // ---- clock (1s tick; also drives relative times + toast expiry) ----
   const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
@@ -208,6 +201,23 @@ export default function WallboardPage() {
     return () => clearInterval(id);
   }, []);
   const nowMs = now ?? Date.now();
+
+  // ---- night mode (7 PM – 7 AM ET) ----
+  // While asleep every SWR poll below gets refreshInterval 0 and the page
+  // renders <NightScreen> instead of the board (see the early return before
+  // the main JSX). Child screens unmount, which silences their hooks too.
+  const { asleep, nightOverride, overrideRemainingMs, wake, sleepNow } =
+    useNightMode(nowMs);
+  const asleepRef = useRef(asleep);
+  asleepRef.current = asleep;
+
+  // Same cache key as TicketDataProvider — this hook just drives a faster
+  // (60s) revalidation cadence while the wallboard is on screen.
+  const { error: jiraError } = useSWR("/api/jira/tickets", fetcher, {
+    refreshInterval: asleep ? 0 : TICKETS_REFRESH_MS,
+    revalidateOnFocus: false,
+    onSuccess: () => stamp("jira"),
+  });
 
   const dayStartDate = new Date(nowMs);
   dayStartDate.setHours(0, 0, 0, 0);
@@ -218,7 +228,7 @@ export default function WallboardPage() {
     `/api/github/prs/summary?since=${encodeURIComponent(dayStartISO)}`,
     fetcher,
     {
-      refreshInterval: STATS_REFRESH_MS,
+      refreshInterval: asleep ? 0 : STATS_REFRESH_MS,
       revalidateOnFocus: false,
       onSuccess: () => stamp("github"),
     }
@@ -227,7 +237,7 @@ export default function WallboardPage() {
     `/api/datadog/insights?dayStart=${encodeURIComponent(dayStartISO)}`,
     fetcher,
     {
-      refreshInterval: STATS_REFRESH_MS,
+      refreshInterval: asleep ? 0 : STATS_REFRESH_MS,
       revalidateOnFocus: false,
       onSuccess: () => stamp("datadog"),
     }
@@ -238,7 +248,7 @@ export default function WallboardPage() {
   // dwell. Raw json fetcher on purpose — the page's shaped `fetcher` would
   // poison this cache entry with a ticket-shaped fallback.
   useSWR(teamActivityKey(dayStartISO), (url: string) => fetch(url).then((r) => r.json()), {
-    refreshInterval: TEAM_ACTIVITY_REFRESH_MS,
+    refreshInterval: asleep ? 0 : TEAM_ACTIVITY_REFRESH_MS,
     revalidateOnFocus: false,
   });
   // Same idea for the My Day screen's tasks rail (its calendar key is already
@@ -252,7 +262,7 @@ export default function WallboardPage() {
   const { data: tasksStatus, error: tasksError } = useSWR<GoogleStatusBody>(
     tasksKey(localDateStr(dayStartDate)),
     (url: string) => fetch(url).then((r) => r.json()),
-    { refreshInterval: TASKS_REFRESH_MS, revalidateOnFocus: false }
+    { refreshInterval: asleep ? 0 : TASKS_REFRESH_MS, revalidateOnFocus: false }
   );
   // Status-only mirror of the My Day calendar poll (dedupes with
   // MeetingCountdown / MyDayScreen — same key, no extra request). Covers both
@@ -260,7 +270,7 @@ export default function WallboardPage() {
   const { data: calDayStatus, error: calDayError } = useSWR<GoogleStatusBody>(
     myDayKey(dayStartISO),
     (url: string) => fetch(url).then((r) => r.json()),
-    { refreshInterval: MY_DAY_REFRESH_MS, revalidateOnFocus: false }
+    { refreshInterval: asleep ? 0 : MY_DAY_REFRESH_MS, revalidateOnFocus: false }
   );
 
   // Status-only mirror of the next-meeting poll (dedupes with
@@ -272,7 +282,7 @@ export default function WallboardPage() {
   const { data: cal, error: calError } = useSWR<GoogleStatusBody>(
     "/api/google/calendar/next",
     fetcher,
-    { refreshInterval: 60_000, revalidateOnFocus: false }
+    { refreshInterval: asleep ? 0 : 60_000, revalidateOnFocus: false }
   );
 
   // ---- team lookup ----
@@ -382,6 +392,10 @@ export default function WallboardPage() {
   const [reloading, setReloading] = useState(false);
   const [versionOk, setVersionOk] = useState<boolean | null>(null);
   useEffect(() => {
+    // Depends on `asleep`: tearing down at night stops the poll, and the
+    // restart at wake-up runs an immediate check (so a deploy that landed
+    // overnight is picked up right away).
+    if (asleep) return;
     let cancelled = false;
     async function check() {
       try {
@@ -410,7 +424,7 @@ export default function WallboardPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [stamp]);
+  }, [stamp, asleep]);
 
   // Idle gate: kick off the dramatic reload sequence only when no toast/meeting
   // alert is showing, so we never cover the board mid-standup. Once it starts
@@ -461,6 +475,7 @@ export default function WallboardPage() {
   const demoIdxRef = useRef(0);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (asleepRef.current) return; // that keypress is NightScreen's wake-up
       if (e.key.toLowerCase() !== "t" || e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
@@ -564,10 +579,12 @@ export default function WallboardPage() {
   );
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (asleepRef.current) return; // that keypress is NightScreen's wake-up
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const tgt = e.target as HTMLElement;
       if (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA") return;
-      if (e.key === "1") setPinnedScreen("sprint");
+      if (e.key === "Escape") sleepNow(); // end a night wake early (no-op by day)
+      else if (e.key === "1") setPinnedScreen("sprint");
       else if (e.key === "2") setPinnedScreen("team");
       else if (e.key === "3") setPinnedScreen("myday");
       else if (e.key === "0") {
@@ -586,7 +603,7 @@ export default function WallboardPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [advance]);
+  }, [advance, sleepNow]);
   const targetScreen: Screen = pinnedScreen ?? SCREENS[screenIdx];
 
   // Screen swap. Preferred path: a View Transition — the browser snapshots
@@ -650,7 +667,7 @@ export default function WallboardPage() {
     configured: boolean;
     events: GitHubActivityEvent[];
   }>("/api/github/activity", fetcher, {
-    refreshInterval: STATS_REFRESH_MS,
+    refreshInterval: asleep ? 0 : STATS_REFRESH_MS,
     revalidateOnFocus: false,
   });
   const ghSeenRef = useRef<Set<string>>(new Set());
@@ -772,6 +789,15 @@ export default function WallboardPage() {
     versionOk,
   ]);
 
+  // Night mode: swap the whole board for the sleep screen. Rendering nothing
+  // else also unmounts MeetingCountdown / TeamScreen / MyDayScreen, silencing
+  // their polls; the page-level hooks above are muted via `asleep ? 0 : …`.
+  // Gated on the clock having ticked (`now !== null`) so the SSR HTML and the
+  // first client render agree — same hydration dodge as the header clock.
+  if (asleep && now !== null) {
+    return <NightScreen nowMs={nowMs} onWake={wake} />;
+  }
+
   return (
     <div
       className="dark fixed inset-0 z-50 flex flex-col gap-[0.7em] overflow-hidden bg-background p-[0.8em] text-foreground"
@@ -794,6 +820,15 @@ export default function WallboardPage() {
           </span>
         )}
         <div className="ml-auto flex items-center gap-[0.6em]">
+          {nightOverride && (
+            <span
+              className="flex items-center gap-[0.3em] rounded-full bg-indigo-500/15 px-[0.6em] py-[0.2em] text-[0.55em] font-semibold uppercase tracking-wide text-indigo-300"
+              title="Woken during night hours — Esc returns to sleep now"
+            >
+              <Moon className="h-[1em] w-[1em]" />
+              Sleeps in {Math.max(1, Math.ceil(overrideRemainingMs / 60_000))}m
+            </span>
+          )}
           {paused && (
             <span
               className="flex items-center gap-[0.3em] rounded-full bg-amber-500/15 px-[0.6em] py-[0.2em] text-[0.55em] font-semibold uppercase tracking-wide text-amber-400"
